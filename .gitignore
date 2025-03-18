@@ -1,0 +1,7 @@
+build/
+
+lib/*.dll
+lib/*.a
+lib/*.lib
+
+CMakeUserPresets.json
