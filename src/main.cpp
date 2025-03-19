@@ -46,6 +46,9 @@ float lastX = SCR_WIDTH / 2.0f, lastY = SCR_HEIGHT / 2.0f;
 bool firstMouse = true;
 bool isDragging = false; 
 
+//Animation setting (just regenerate every frame for now)
+bool isAutoRegenerating = false;
+
 // Vertex Shader (MVP Transform)
 const char* vertexShaderSource = R"(
 #version 330 core
@@ -137,9 +140,16 @@ int main()
         ImGui::SliderInt("Max Depth", &maxDepth, 1, 10);
         ImGui::SliderFloat("Displacement", &displacement, 0.0f, 5.0f);
         ImGui::ColorEdit3("Color", glm::value_ptr(lightningColor), ImGuiColorEditFlags_NoInputs);
-        if (ImGui::Button("Regenerate"))
+        if (ImGui::Button(isAutoRegenerating ? "Stop" : "Play"))
         {
-            updateLightning();
+            isAutoRegenerating = !isAutoRegenerating; // Toggle state
+        }
+        ImGui::SameLine();
+        if (!isAutoRegenerating) {
+            if (ImGui::Button("Regenerate"))
+            {
+                updateLightning();
+            }
         }
         ImGui::End();
 
@@ -153,6 +163,11 @@ int main()
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+
+        if (isAutoRegenerating)
+        {
+            updateLightning(); // Regenerate every frame
+        }
 
         renderLightning();
 
