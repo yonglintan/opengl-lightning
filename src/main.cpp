@@ -135,7 +135,7 @@ int main()
         ImGui::NewFrame();
         ImGui::Begin("Lightning Settings");
         ImGui::SliderInt("Max Depth", &maxDepth, 1, 10);
-        ImGui::SliderFloat("Displacement", &displacement, 0.0f, 1.0f);
+        ImGui::SliderFloat("Displacement", &displacement, 0.0f, 5.0f);
         ImGui::ColorEdit3("Color", glm::value_ptr(lightningColor), ImGuiColorEditFlags_NoInputs);
         if (ImGui::Button("Regenerate"))
         {
