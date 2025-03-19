@@ -45,4 +45,4 @@ This project depends on:
     cmake --build build
     ```
     - Run the built executable:
-      - Location of the executable may vary. The cmake --build command previously run should indicated the location of the executable.
+      - Location of the executable may vary. The cmake --build command previously run should have indicated the location of the executable.
