@@ -23,6 +23,12 @@ void updateLightning();
 void setupOpenGL();
 void renderLightning();
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
+void initParticleSystem();
+void emitParticlesAlongLightning();
+void updateParticles(float deltaTime);
+void renderParticles();
+
+
 
 // Settings
 const unsigned int SCR_WIDTH = 800;
@@ -32,6 +38,22 @@ const unsigned int SCR_HEIGHT = 600;
 int maxDepth = 5;
 float displacement = 0.5f;
 glm::vec3 lightningColor = glm::vec3(1.0f, 1.0f, 1.0f);
+
+// Particle parameters
+struct Particle {
+    glm::vec3 position;
+    glm::vec3 velocity;
+    glm::vec3 color;
+    float size;
+    float life;
+    float maxLife;
+};
+
+std::vector<Particle> particles;
+unsigned int particleVAO, particleVBO;
+unsigned int particleShaderProgram;
+float particleEmissionRate = 0.05f;
+float particleLifetime = 1.0f;
 
 // OpenGL objects
 unsigned int VAO, VBO, shaderProgram;
@@ -72,6 +94,45 @@ void main()
     FragColor = vec4(lightningColor, 1.0); 
 }
 )";
+
+// Particle Vertex Shader
+const char* particleVertexShaderSource = R"(
+    #version 330 core
+    layout (location = 0) in vec3 aPos;
+    layout (location = 1) in vec3 aColor;
+    layout (location = 2) in float aSize;
+    
+    uniform mat4 view;
+    uniform mat4 projection;
+    
+    out vec3 Color;
+    
+    void main()
+    {
+        Color = aColor;
+        gl_Position = projection * view * vec4(aPos, 1.0);
+        gl_PointSize = aSize / gl_Position.z;
+    }
+    )";
+    
+// Particle Fragment Shader
+const char* particleFragmentShaderSource = R"(
+    #version 330 core
+    in vec3 Color;
+    out vec4 FragColor;
+    
+    void main()
+    {
+        // Create a circular particle
+        vec2 coord = gl_PointCoord - vec2(0.5);
+        if(length(coord) > 0.5)
+            discard;
+            
+        // Fade out towards edges
+        float alpha = 1.0 - smoothstep(0.3, 0.5, length(coord));
+        FragColor = vec4(Color, alpha);
+    }
+    )";
 
 void compileShader()
 {
@@ -119,7 +180,12 @@ int main()
 
     compileShader();
     setupOpenGL();
+    initParticleSystem();
     updateLightning();
+    emitParticlesAlongLightning(); // Initial particles
+
+    float lastFrame = 0.0f;
+    float currentFrame = 0.0f;
 
     // Setup Dear ImGui
     IMGUI_CHECKVERSION();
@@ -130,6 +196,11 @@ int main()
 
     while (!glfwWindowShouldClose(window))
     {
+        // Calculate delta time
+        currentFrame = glfwGetTime();
+        float deltaTime = currentFrame - lastFrame;
+        lastFrame = currentFrame;
+        
         processInput(window);
 
         // ImGui
@@ -140,18 +211,36 @@ int main()
         ImGui::SliderInt("Max Depth", &maxDepth, 1, 10);
         ImGui::SliderFloat("Displacement", &displacement, 0.0f, 5.0f);
         ImGui::ColorEdit3("Color", glm::value_ptr(lightningColor), ImGuiColorEditFlags_NoInputs);
+
+        // Add particle controls
+        ImGui::Separator();
+        ImGui::Text("Particle Effects");
+        ImGui::SliderFloat("Emission Rate", &particleEmissionRate, 0.01f, 0.2f);
+        ImGui::SliderFloat("Particle Lifetime", &particleLifetime, 0.1f, 2.0f);
+
         if (ImGui::Button(isAutoRegenerating ? "Stop" : "Play"))
         {
             isAutoRegenerating = !isAutoRegenerating; // Toggle state
         }
         ImGui::SameLine();
-        if (!isAutoRegenerating) {
-            if (ImGui::Button("Regenerate"))
-            {
-                updateLightning();
-            }
+
+        if (ImGui::Button("Regenerate"))
+        {
+            updateLightning();
+            emitParticlesAlongLightning();
         }
         ImGui::End();
+
+        // Update particles
+        updateParticles(deltaTime);
+        
+        // Emit particles regularly for constant effect
+        static float particleTimer = 0.0f;
+        particleTimer += deltaTime;
+        if (particleTimer > particleEmissionRate) {
+            emitParticlesAlongLightning();
+            particleTimer = 0.0f;
+        }
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glUseProgram(shaderProgram);
@@ -170,6 +259,7 @@ int main()
         }
 
         renderLightning();
+        renderParticles();
 
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -193,8 +283,8 @@ void generateLightning(std::vector<float>& vertices, glm::vec3 start, glm::vec3 
     }
 
     glm::vec3 mid = (start + end) * 0.5f;
-    mid.y += (float(rand()) / RAND_MAX - 0.5f) * displacement;
-    mid.z += (float(rand()) / RAND_MAX - 0.5f) * displacement;
+    mid.y += (float(rand()) / float(RAND_MAX) - 0.5f) * displacement;
+    mid.z += (float(rand()) / float(RAND_MAX) - 0.5f) * displacement;
 
     generateLightning(vertices, start, mid, depth - 1, displacement * 0.5f);
     generateLightning(vertices, mid, end, depth - 1, displacement * 0.5f);
@@ -303,4 +393,120 @@ void setupOpenGL()
 void framebuffer_size_callback(GLFWwindow* window, int width, int height)
 {
     glViewport(0, 0, width, height);
+}
+
+void initParticleSystem() {
+    // Compile particle shaders
+    unsigned int particleVertexShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(particleVertexShader, 1, &particleVertexShaderSource, NULL);
+    glCompileShader(particleVertexShader);
+    
+    unsigned int particleFragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(particleFragmentShader, 1, &particleFragmentShaderSource, NULL);
+    glCompileShader(particleFragmentShader);
+    
+    particleShaderProgram = glCreateProgram();
+    glAttachShader(particleShaderProgram, particleVertexShader);
+    glAttachShader(particleShaderProgram, particleFragmentShader);
+    glLinkProgram(particleShaderProgram);
+    
+    glDeleteShader(particleVertexShader);
+    glDeleteShader(particleFragmentShader);
+    
+    // Create VAO and VBO for particles
+    glGenVertexArrays(1, &particleVAO);
+    glGenBuffers(1, &particleVBO);
+    
+    glBindVertexArray(particleVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, particleVBO);
+    
+    // Position attribute
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)0);
+    
+    // Color attribute
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)offsetof(Particle, color));
+    
+    // Size attribute
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)offsetof(Particle, size));
+    
+    glBindVertexArray(0);
+}
+
+void emitParticlesAlongLightning() {
+    // Emit particles along the lightning path
+    for (size_t i = 0; i < lightningVertices.size(); i += 3) {
+        // Skip some vertices to avoid too many particles
+        if (rand() % 3 != 0) continue;
+        
+        glm::vec3 position(lightningVertices[i], lightningVertices[i+1], lightningVertices[i+2]);
+        
+        // Random direction
+        float randomAngle = static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * 2.0f * 3.14159f;
+        float randomSpeed = 0.02f + static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * 0.05f;
+        
+        Particle particle;
+        particle.position = position;
+        particle.velocity = glm::vec3(cos(randomAngle) * randomSpeed, 
+                                     sin(randomAngle) * randomSpeed,
+                                     (static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 0.05f);
+        
+        // Slight color variation
+        float colorVariation = 0.85f + static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * 0.15f;
+        particle.color = lightningColor * colorVariation;
+        
+        // Random size and life
+        particle.maxLife = particleLifetime * (0.5f + static_cast<float>(rand()) / static_cast<float>(RAND_MAX));
+        particle.life = particle.maxLife;
+        
+        particles.push_back(particle);
+    }
+}
+
+void updateParticles(float deltaTime) {
+    // Update existing particles
+    for (auto it = particles.begin(); it != particles.end(); ) {
+        it->life -= deltaTime;
+        if (it->life <= 0.0f) {
+            it = particles.erase(it);
+        } else {
+            it->position += it->velocity * deltaTime;
+            it->size -= deltaTime * 0.5f;
+            
+            // Fade color as life decreases
+            float lifeRatio = it->life / it->maxLife;
+            it->color = lightningColor * lifeRatio;
+            
+            ++it;
+        }
+    }
+}
+
+void renderParticles() {
+    if (particles.empty()) return;
+    
+    // Enable blending for transparency
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    
+    glUseProgram(particleShaderProgram);
+    
+    glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
+    glm::mat4 projection = glm::perspective(glm::radians(45.0f), (float)SCR_WIDTH / SCR_HEIGHT, 0.1f, 100.0f);
+    
+    glUniformMatrix4fv(glGetUniformLocation(particleShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+    glUniformMatrix4fv(glGetUniformLocation(particleShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+    
+    glBindVertexArray(particleVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, particleVBO);
+    glBufferData(GL_ARRAY_BUFFER, particles.size() * sizeof(Particle), particles.data(), GL_DYNAMIC_DRAW);
+    
+    glDrawArrays(GL_POINTS, 0, particles.size());
+    
+    glBindVertexArray(0);
+    glUseProgram(0);
+    
+    glDisable(GL_BLEND);
 }
