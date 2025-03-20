@@ -356,10 +356,11 @@ void processInput(GLFWwindow* window)
     }
 
     const float cameraSpeed = 0.004f;
+    const float zoomModifier = 2.0f;
     if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
-        cameraPos += cameraSpeed * cameraFront;
+        cameraPos += cameraSpeed * zoomModifier * cameraFront;
     if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
-        cameraPos -= cameraSpeed * cameraFront;
+        cameraPos -= cameraSpeed * zoomModifier * cameraFront;
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
         cameraPos += cameraSpeed * cameraUp;
     if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
