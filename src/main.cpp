@@ -265,11 +265,15 @@ void processInput(GLFWwindow* window)
         glfwSetWindowShouldClose(window, true);
     }
 
-    const float cameraSpeed = 0.0005f;
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+    const float cameraSpeed = 0.004f;
+    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
         cameraPos += cameraSpeed * cameraFront;
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
         cameraPos -= cameraSpeed * cameraFront;
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+        cameraPos += cameraSpeed * cameraUp;
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+        cameraPos -= cameraSpeed * cameraUp;
     if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
         cameraPos -= glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
     if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
