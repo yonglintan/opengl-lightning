@@ -27,12 +27,15 @@ void initParticleSystem();
 void emitParticlesAlongLightning();
 void updateParticles(float deltaTime);
 void renderParticles();
+void setupGroundPlane();
+void renderGroundPlane(const glm::mat4& view, const glm::mat4& projection);
 
 
 
 // Settings
 const unsigned int SCR_WIDTH = 800;
 const unsigned int SCR_HEIGHT = 600;
+
 
 // Lightning parameters (adjustable via UI)
 int maxDepth = 5;
@@ -52,6 +55,8 @@ struct Particle {
 std::vector<Particle> particles;
 unsigned int particleVAO, particleVBO;
 unsigned int particleShaderProgram;
+unsigned int planeVAO, planeVBO;
+unsigned int planeShaderProgram;
 float particleEmissionRate = 0.05f;
 float particleLifetime = 1.0f;
 
@@ -60,10 +65,10 @@ unsigned int VAO, VBO, shaderProgram;
 std::vector<float> lightningVertices;
 
 // Camera settings
-glm::vec3 cameraPos = glm::vec3(0.0f, 0.0f, 3.0f);
-glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
+glm::vec3 cameraPos = glm::vec3(2.0f, 2.0f, 2.0f);  // Diagonal view
+glm::vec3 cameraFront = glm::normalize(glm::vec3(-1.0f, -1.0f, -1.0f));
 glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
-float yaw = -90.0f, pitch = 0.0f;
+float yaw = -135.0f, pitch = -35.0f;
 float lastX = SCR_WIDTH / 2.0f, lastY = SCR_HEIGHT / 2.0f;
 bool firstMouse = true;
 bool isDragging = false; 
@@ -134,6 +139,28 @@ const char* particleFragmentShaderSource = R"(
     }
     )";
 
+const char* planeVertexShaderSource = R"(
+    #version 330 core
+    layout (location = 0) in vec3 aPos;
+    uniform mat4 model;
+    uniform mat4 view;
+    uniform mat4 projection;
+    void main()
+    {
+        gl_Position = projection * view * model * vec4(aPos, 1.0);
+    }
+    )";
+    
+    const char* planeFragmentShaderSource = R"(
+    #version 330 core
+    out vec4 FragColor;
+    uniform vec3 planeColor;
+    void main()
+    {
+        FragColor = vec4(planeColor, 1.0);
+    }
+    )";
+
 void compileShader()
 {
     unsigned int vertexShader = glCreateShader(GL_VERTEX_SHADER);
@@ -180,6 +207,7 @@ int main()
 
     compileShader();
     setupOpenGL();
+    setupGroundPlane();
     initParticleSystem();
     updateLightning();
     emitParticlesAlongLightning(); // Initial particles
@@ -258,6 +286,11 @@ int main()
             updateLightning(); // Regenerate every frame
         }
 
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    
+
+        renderGroundPlane(view, projection);
         renderLightning();
         renderParticles();
 
@@ -272,7 +305,7 @@ int main()
     return 0;
 }
 
-void generateLightning(std::vector<float>& vertices, glm::vec3 start, glm::vec3 end, int depth, float displacement)
+void generateLightning(std::vector<float>& vertices, glm::vec3 start, glm::vec3 end, int depth, float displacement) 
 {
     if (depth == 0)
     {
@@ -302,9 +335,28 @@ void updateLightning()
 
 void renderLightning()
 {
+    glUseProgram(shaderProgram);
+    
+    // Render multiple passes for a glow effect
     glBindVertexArray(VAO);
-    glLineWidth(5.0f);
+    
+    // Main lightning (thick and bright)
+    glLineWidth(8.0f); 
+    glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, glm::value_ptr(lightningColor));
     glDrawArrays(GL_LINE_STRIP, 0, lightningVertices.size() / 3);
+    
+    // Glow effect (slightly transparent and thinner)
+    glLineWidth(5.0f);
+    glm::vec3 glowColor = lightningColor * 1.5f; 
+    glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, glm::value_ptr(glowColor));
+    glDrawArrays(GL_LINE_STRIP, 0, lightningVertices.size() / 3);
+    
+    // Core lightning (very bright and thin)
+    glLineWidth(2.0f);
+    glm::vec3 coreColor = lightningColor * 2.0f; 
+    glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, glm::value_ptr(coreColor));
+    glDrawArrays(GL_LINE_STRIP, 0, lightningVertices.size() / 3);
+    
     glBindVertexArray(0);
 }
 
@@ -510,4 +562,73 @@ void renderParticles() {
     glUseProgram(0);
     
     glDisable(GL_BLEND);
+}
+
+void setupGroundPlane() {
+    // Plane vertices (a simple square)
+    float planeVertices[] = {
+        // positions        
+        -5.0f, -1.0f, -5.0f,
+         5.0f, -1.0f, -5.0f,
+         5.0f, -1.0f,  5.0f,
+        -5.0f, -1.0f,  5.0f
+    };
+    
+    unsigned int planeIndices[] = {
+        0, 1, 2,
+        0, 2, 3
+    };
+    
+    // Create shader program
+    unsigned int planeVertexShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(planeVertexShader, 1, &planeVertexShaderSource, NULL);
+    glCompileShader(planeVertexShader);
+    
+    unsigned int planeFragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(planeFragmentShader, 1, &planeFragmentShaderSource, NULL);
+    glCompileShader(planeFragmentShader);
+    
+    planeShaderProgram = glCreateProgram();
+    glAttachShader(planeShaderProgram, planeVertexShader);
+    glAttachShader(planeShaderProgram, planeFragmentShader);
+    glLinkProgram(planeShaderProgram);
+    
+    glDeleteShader(planeVertexShader);
+    glDeleteShader(planeFragmentShader);
+    
+    // Create VAO/VBO
+    unsigned int planeEBO;
+    glGenVertexArrays(1, &planeVAO);
+    glGenBuffers(1, &planeVBO);
+    glGenBuffers(1, &planeEBO);
+    
+    glBindVertexArray(planeVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, planeVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(planeVertices), planeVertices, GL_STATIC_DRAW);
+    
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, planeEBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(planeIndices), planeIndices, GL_STATIC_DRAW);
+    
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    
+    glBindVertexArray(0);
+
+    
+}
+
+void renderGroundPlane(const glm::mat4& view, const glm::mat4& projection) {
+    glUseProgram(planeShaderProgram);
+    
+    glm::mat4 model = glm::mat4(1.0f);
+    glUniformMatrix4fv(glGetUniformLocation(planeShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+    glUniformMatrix4fv(glGetUniformLocation(planeShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+    glUniformMatrix4fv(glGetUniformLocation(planeShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+    
+    // Dark gray color for the plane
+    glUniform3f(glGetUniformLocation(planeShaderProgram, "planeColor"), 0.2f, 0.2f, 0.2f);
+    
+    glBindVertexArray(planeVAO);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+    glBindVertexArray(0);
 }
