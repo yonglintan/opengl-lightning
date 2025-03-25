@@ -29,6 +29,10 @@ void updateParticles(float deltaTime);
 void renderParticles();
 void setupGroundPlane();
 void renderGroundPlane(const glm::mat4& view, const glm::mat4& projection);
+void setupSticks();
+void addStickControls();
+void renderSticks(const glm::mat4& view, const glm::mat4& projection);
+void updateStickPositions();
 
 
 
@@ -52,6 +56,20 @@ struct Particle {
     float maxLife;
 };
 
+struct Stick {
+    glm::vec3 position;    // Base position on the ground
+    float height;          // Height of the stick
+    glm::vec3 color;       // Color of the stick
+};
+
+// Stick Global Variables
+std::vector<Stick> sticks;
+unsigned int stickVAO, stickVBO;
+unsigned int stickShaderProgram;
+glm::vec3 stickColor = glm::vec3(0.6f, 0.4f, 0.2f); // Brown color for sticks
+int numSticks = 2; // Start with two sticks: source and destination
+
+// Particle Global Variables
 std::vector<Particle> particles;
 unsigned int particleVAO, particleVBO;
 unsigned int particleShaderProgram;
@@ -208,6 +226,7 @@ int main()
     compileShader();
     setupOpenGL();
     setupGroundPlane();
+    setupSticks();
     initParticleSystem();
     updateLightning();
     emitParticlesAlongLightning(); // Initial particles
@@ -246,6 +265,8 @@ int main()
         ImGui::SliderFloat("Emission Rate", &particleEmissionRate, 0.01f, 0.2f);
         ImGui::SliderFloat("Particle Lifetime", &particleLifetime, 0.1f, 2.0f);
 
+        addStickControls();
+
         if (ImGui::Button(isAutoRegenerating ? "Stop" : "Play"))
         {
             isAutoRegenerating = !isAutoRegenerating; // Toggle state
@@ -270,6 +291,9 @@ int main()
             particleTimer = 0.0f;
         }
 
+        updateStickPositions();
+
+
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glUseProgram(shaderProgram);
 
@@ -291,6 +315,7 @@ int main()
     
 
         renderGroundPlane(view, projection);
+        renderSticks(view, projection);
         renderLightning();
         renderParticles();
 
@@ -309,9 +334,15 @@ void generateLightning(std::vector<float>& vertices, glm::vec3 start, glm::vec3 
 {
     if (depth == 0)
     {
+        // Add the start position
         vertices.push_back(start.x);
         vertices.push_back(start.y);
         vertices.push_back(start.z);
+        
+        // Also add the end position to ensure the lightning connects fully
+        vertices.push_back(end.x);
+        vertices.push_back(end.y);
+        vertices.push_back(end.z);
         return;
     }
 
@@ -323,10 +354,24 @@ void generateLightning(std::vector<float>& vertices, glm::vec3 start, glm::vec3 
     generateLightning(vertices, mid, end, depth - 1, displacement * 0.5f);
 }
 
-void updateLightning()
-{
+void updateLightning() {
+    
+    // Make sure we have at least two sticks to connect
+    if (sticks.size() < 2) {
+        return;
+    }
+    
+    // Get top positions of the first and last stick for lightning endpoints
+    glm::vec3 startPos = glm::vec3(sticks[0].position.x, 
+                                  sticks[0].position.y + sticks[0].height, 
+                                  sticks[0].position.z);
+                                  
+    glm::vec3 endPos = glm::vec3(sticks[1].position.x, 
+                                sticks[1].position.y + sticks[1].height, 
+                                sticks[1].position.z);
+    
     lightningVertices.clear();
-    generateLightning(lightningVertices, glm::vec3(-0.5f, 0.8f, 0.0f), glm::vec3(0.5f, -0.8f, 0.0f), maxDepth, displacement);
+    generateLightning(lightningVertices, startPos, endPos, maxDepth, displacement);
 
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
     glBufferData(GL_ARRAY_BUFFER, lightningVertices.size() * sizeof(float), lightningVertices.data(), GL_DYNAMIC_DRAW);
@@ -631,4 +676,120 @@ void renderGroundPlane(const glm::mat4& view, const glm::mat4& projection) {
     glBindVertexArray(planeVAO);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
     glBindVertexArray(0);
+}
+
+void setupSticks() {
+    // Create initial sticks
+    sticks.clear();
+    
+    // First stick - source
+    Stick sourceStick;
+    sourceStick.position = glm::vec3(-1.5f, -1.0f, 0.0f); // On the ground plane
+    sourceStick.height = 2.0f;
+    sourceStick.color = stickColor;
+    sticks.push_back(sourceStick);
+    
+    // Second stick - destination
+    Stick destStick;
+    destStick.position = glm::vec3(1.5f, -1.0f, 0.0f); // On the ground plane
+    destStick.height = 1.5f;
+    destStick.color = stickColor;
+    sticks.push_back(destStick);
+    
+    // Create VAO and VBO for sticks
+    glGenVertexArrays(1, &stickVAO);
+    glGenBuffers(1, &stickVBO);
+    
+    // Compile shader for sticks - we can reuse the lightning shader for simplicity
+    stickShaderProgram = shaderProgram;
+}
+void updateStickPositions() {
+    // To be configured later
+
+}
+
+void renderSticks(const glm::mat4& view, const glm::mat4& projection) {
+    glUseProgram(stickShaderProgram);
+    
+    glm::mat4 model = glm::mat4(1.0f);
+    glUniformMatrix4fv(glGetUniformLocation(stickShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+    glUniformMatrix4fv(glGetUniformLocation(stickShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+    glUniformMatrix4fv(glGetUniformLocation(stickShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+    
+    // Render each stick as a line
+    glBindVertexArray(stickVAO);
+    
+    for (const auto& stick : sticks) {
+        // Create vertices for a line from bottom to top of stick
+        float stickVertices[] = {
+            stick.position.x, stick.position.y, stick.position.z,                       // Bottom
+            stick.position.x, stick.position.y + stick.height, stick.position.z         // Top
+        };
+        
+        // Update buffer with current stick vertices
+        glBindBuffer(GL_ARRAY_BUFFER, stickVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(stickVertices), stickVertices, GL_DYNAMIC_DRAW);
+        
+        // Set position attribute
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+        
+        // Set stick color
+        glUniform3fv(glGetUniformLocation(stickShaderProgram, "lightningColor"), 1, glm::value_ptr(stick.color));
+        
+        // Draw thick line
+        glLineWidth(5.0f);
+        glDrawArrays(GL_LINES, 0, 2);
+    }
+    
+    glBindVertexArray(0);
+}
+
+void addStickControls() {
+    ImGui::Separator();
+    ImGui::Text("Stick Settings");
+    
+    // Common stick settings
+    if (ImGui::ColorEdit3("Stick Color", glm::value_ptr(stickColor), ImGuiColorEditFlags_NoInputs)) {
+        // Update all stick colors when changed
+        for (auto& stick : sticks) {
+            stick.color = stickColor;
+        }
+    }
+    
+    // Start stick settings
+    if (ImGui::CollapsingHeader("Start Stick", ImGuiTreeNodeFlags_DefaultOpen)) {
+        bool startChanged = false;
+        
+        // Height control for start stick
+        startChanged |= ImGui::SliderFloat("Height##start", &sticks[0].height, 0.5f, 3.0f);
+        
+        // Position controls for start stick
+        ImGui::Text("Position:");
+        startChanged |= ImGui::SliderFloat("X##start", &sticks[0].position.x, -4.5f, 4.5f);
+    
+        startChanged |= ImGui::SliderFloat("Z##start", &sticks[0].position.z, -4.5f, 4.5f);
+        
+        if (startChanged) {
+            updateLightning();
+        }
+    }
+    
+    // End stick settings
+    if (ImGui::CollapsingHeader("End Stick", ImGuiTreeNodeFlags_DefaultOpen)) {
+        bool endChanged = false;
+        
+        // Height control for end stick
+        endChanged |= ImGui::SliderFloat("Height##end", &sticks[1].height, 0.5f, 3.0f);
+        
+        // Position controls for end stick
+        ImGui::Text("Position:");
+        endChanged |= ImGui::SliderFloat("X##end", &sticks[1].position.x, -4.5f, 4.5f);
+       
+        endChanged |= ImGui::SliderFloat("Z##end", &sticks[1].position.z, -4.5f, 4.5f);
+        
+        if (endChanged) {
+            updateLightning();
+        }
+    }
 }
