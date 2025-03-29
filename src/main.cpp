@@ -4,6 +4,7 @@
 #include <iostream>
 #include <cmath>
 #include <cstdlib>
+#include <string>
 
 // OpenGL Math Library (GLM)
 #include <glm/glm.hpp>
@@ -30,6 +31,7 @@ void renderParticles();
 void setupGroundPlane();
 void renderGroundPlane(const glm::mat4& view, const glm::mat4& projection);
 void setupSticks();
+void addStick();
 void addStickControls();
 void renderSticks(const glm::mat4& view, const glm::mat4& projection);
 void updateStickPositions();
@@ -278,6 +280,13 @@ int main()
             updateLightning();
             emitParticlesAlongLightning();
         }
+        ImGui::SameLine();
+
+        if (ImGui::Button("Add Stick"))
+        {
+            addStick();
+        }
+
         ImGui::End();
 
         // Update particles
@@ -290,9 +299,6 @@ int main()
             emitParticlesAlongLightning();
             particleTimer = 0.0f;
         }
-
-        updateStickPositions();
-
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glUseProgram(shaderProgram);
@@ -361,18 +367,26 @@ void updateLightning() {
         return;
     }
     
-    // Get top positions of the first and last stick for lightning endpoints
-    glm::vec3 startPos = glm::vec3(sticks[0].position.x, 
-                                  sticks[0].position.y + sticks[0].height, 
-                                  sticks[0].position.z);
-                                  
-    glm::vec3 endPos = glm::vec3(sticks[1].position.x, 
-                                sticks[1].position.y + sticks[1].height, 
-                                sticks[1].position.z);
     
     lightningVertices.clear();
-    generateLightning(lightningVertices, startPos, endPos, maxDepth, displacement);
 
+    for (size_t i = 0; i < sticks.size() - 1; ++i) {
+        glm::vec3 startPos = glm::vec3(
+            sticks[i].position.x,
+            sticks[i].position.y + sticks[i].height,
+            sticks[i].position.z
+        );
+
+        glm::vec3 endPos = glm::vec3(
+            sticks[i + 1].position.x,
+            sticks[i + 1].position.y + sticks[i + 1].height,
+            sticks[i + 1].position.z
+        );
+
+        generateLightning(lightningVertices, startPos, endPos, maxDepth, displacement);
+    }
+
+    // Upload to GPU
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
     glBufferData(GL_ARRAY_BUFFER, lightningVertices.size() * sizeof(float), lightningVertices.data(), GL_DYNAMIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -703,9 +717,13 @@ void setupSticks() {
     // Compile shader for sticks - we can reuse the lightning shader for simplicity
     stickShaderProgram = shaderProgram;
 }
-void updateStickPositions() {
-    // To be configured later
 
+void addStick() {
+    Stick newStick;
+    newStick.position = glm::vec3(0.0f, -1.0f, 0.0f);
+    newStick.height = 2.0f;
+    newStick.color = stickColor;
+    sticks.push_back(newStick);
 }
 
 void renderSticks(const glm::mat4& view, const glm::mat4& projection) {
@@ -756,40 +774,43 @@ void addStickControls() {
             stick.color = stickColor;
         }
     }
-    
     // Start stick settings
-    if (ImGui::CollapsingHeader("Start Stick", ImGuiTreeNodeFlags_DefaultOpen)) {
-        bool startChanged = false;
-        
-        // Height control for start stick
-        startChanged |= ImGui::SliderFloat("Height##start", &sticks[0].height, 0.5f, 3.0f);
-        
-        // Position controls for start stick
-        ImGui::Text("Position:");
-        startChanged |= ImGui::SliderFloat("X##start", &sticks[0].position.x, -4.5f, 4.5f);
-    
-        startChanged |= ImGui::SliderFloat("Z##start", &sticks[0].position.z, -4.5f, 4.5f);
-        
-        if (startChanged) {
-            updateLightning();
+    if (ImGui::CollapsingHeader("Stick Positions", ImGuiTreeNodeFlags_DefaultOpen)) {
+        // Column headers
+        ImGui::Text(" "); ImGui::SameLine(0, 55);  // Spacer
+        ImGui::Text("Height"); ImGui::SameLine(0, 60);
+        ImGui::Text("X"); ImGui::SameLine(0, 90);
+        ImGui::Text("Z");
+
+        for (int i = 0; i < sticks.size(); ++i) {
+            auto& stick = sticks[i];
+            bool startChanged = false;
+
+            // Row label (e.g., Stick 1)
+            ImGui::Text("Stick %d", i + 1);
+            ImGui::SameLine(0, 10);
+
+            // Set slider width
+            ImGui::PushItemWidth(80.0f);
+
+            // Height slider
+            startChanged |= ImGui::SliderFloat(("##Height" + std::to_string(i)).c_str(), &stick.height, 0.5f, 3.0f);
+            ImGui::SameLine(0, 20);
+
+            // X slider
+            startChanged |= ImGui::SliderFloat(("##X" + std::to_string(i)).c_str(), &stick.position.x, -4.5f, 4.5f);
+            ImGui::SameLine(0, 20);
+
+            // Z slider
+            startChanged |= ImGui::SliderFloat(("##Z" + std::to_string(i)).c_str(), &stick.position.z, -4.5f, 4.5f);
+
+            ImGui::PopItemWidth();
+
+            if (startChanged) {
+                updateLightning();
+            }
         }
+        ImGui::Separator();
     }
-    
-    // End stick settings
-    if (ImGui::CollapsingHeader("End Stick", ImGuiTreeNodeFlags_DefaultOpen)) {
-        bool endChanged = false;
-        
-        // Height control for end stick
-        endChanged |= ImGui::SliderFloat("Height##end", &sticks[1].height, 0.5f, 3.0f);
-        
-        // Position controls for end stick
-        ImGui::Text("Position:");
-        endChanged |= ImGui::SliderFloat("X##end", &sticks[1].position.x, -4.5f, 4.5f);
-       
-        endChanged |= ImGui::SliderFloat("Z##end", &sticks[1].position.z, -4.5f, 4.5f);
-        
-        if (endChanged) {
-            updateLightning();
-        }
-    }
+   
 }
