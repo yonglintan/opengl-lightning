@@ -44,9 +44,39 @@ This project depends on:
       cmake --preset=vcpkg-make -G "Your Generator"
       ```
 4.  Build and run the project
+
     - From the project root folder, run:
+
     ```sh
     cmake --build build
     ```
+
     - Run the built executable:
       - Location of the executable may vary. The `cmake --build build` command previously run should have indicated the location of the executable.
+
+5.  For Zac
+    - Check if your vcpkg exists and works with:
+    ```sh
+    ~/vcpkg/vcpkg --version
+    ```
+    - If not found, use:
+    ```sh
+    export PATH=$HOME/vcpkg:$PATH
+    ```
+    - If issues are still found, do:
+    ```sh
+    rm -rf build
+    mkdir build && cd build
+    ```
+    and also,
+    ```sh
+    cmake .. -G "Unix Makefiles" \
+    -DCMAKE_TOOLCHAIN_FILE=$HOME/vcpkg/scripts/buildsystems/vcpkg.cmake \
+    -DCMAKE_C_COMPILER=$(which clang) \
+    -DCMAKE_CXX_COMPILER=$(which clang++)
+    ```
+    - Stuff you like to use and always forget
+    ```sh
+    cmake --build build
+    build/GraphicsProj
+    ```
