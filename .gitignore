@@ -5,3 +5,5 @@ lib/*.a
 lib/*.lib
 
 CMakeUserPresets.json
+
+imgui.ini
