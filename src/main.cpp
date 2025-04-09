@@ -5,11 +5,17 @@
 #include <cmath>
 #include <cstdlib>
 #include <string>
+#include <unordered_map>
+#include <stack>
+
+
 
 // OpenGL Math Library (GLM)
+#define GLM_ENABLE_EXPERIMENTAL
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/gtx/rotate_vector.hpp>
 
 // Dear ImGui
 #include "imgui.h"
@@ -23,6 +29,15 @@ void generateLightning(std::vector<float>& vertices, glm::vec3 start, glm::vec3 
 void updateLightning();
 void setupOpenGL();
 void renderLightning();
+std::string generateLSystem(const std::string& axiom, int iterations);
+void interpretLSystem(
+    const std::string& lsystem,
+    glm::vec3 origin,
+    glm::vec3 baseDirection,
+    float segmentLength,
+    float angleVariance,
+    std::vector<float>& outVertices
+);
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
 void initParticleSystem();
 void emitParticlesAlongLightning();
@@ -47,6 +62,23 @@ const unsigned int SCR_HEIGHT = 600;
 int maxDepth = 5;
 float displacement = 0.5f;
 glm::vec3 lightningColor = glm::vec3(1.0f, 1.0f, 1.0f);
+
+struct Segment {
+    glm::vec3 start;
+    glm::vec3 end;
+};
+
+//sub branching
+float branchChance = 0.25f;               // Chance per segment (0.0 to 1.0)
+int lsystemIterations = 3;                // Number of L-system iterations
+float segmentLength = 0.1f;               // Length of each L-system segment
+float angleVariance = 45.0f;              // Max rotation in degrees
+
+// Probabilities for L-system rules
+float probFF = 0.5f; //probability of no branch
+float probPlus = 0.3f;
+float probMinus = 0.2f;
+
 
 // Particle parameters
 struct Particle {
@@ -261,6 +293,12 @@ int main()
         ImGui::SliderFloat("Displacement", &displacement, 0.0f, 5.0f);
         ImGui::ColorEdit3("Color", glm::value_ptr(lightningColor), ImGuiColorEditFlags_NoInputs);
 
+        // Add Branch controls
+        ImGui::Separator();
+        ImGui::Text("Lightning Branches");
+        ImGui::SliderFloat("Branch Length", &segmentLength, 0.0f, 0.15f);
+        ImGui::SliderFloat("Branch Frequncy", &branchChance, 0.0f, 1.0f);
+
         // Add particle controls
         ImGui::Separator();
         ImGui::Text("Particle Effects");
@@ -361,29 +399,57 @@ void generateLightning(std::vector<float>& vertices, glm::vec3 start, glm::vec3 
 }
 
 void updateLightning() {
-    
-    // Make sure we have at least two sticks to connect
-    if (sticks.size() < 2) {
-        return;
-    }
-    
-    
-    lightningVertices.clear();
+    if (sticks.size() < 2) return;
 
+    lightningVertices.clear();
+    std::vector<Segment> mainSegments;
+
+    // Generate main bolt
     for (size_t i = 0; i < sticks.size() - 1; ++i) {
-        glm::vec3 startPos = glm::vec3(
+        glm::vec3 startPos = {
             sticks[i].position.x,
             sticks[i].position.y + sticks[i].height,
             sticks[i].position.z
-        );
+        };
 
-        glm::vec3 endPos = glm::vec3(
+        glm::vec3 endPos = {
             sticks[i + 1].position.x,
             sticks[i + 1].position.y + sticks[i + 1].height,
             sticks[i + 1].position.z
-        );
+        };
 
-        generateLightning(lightningVertices, startPos, endPos, maxDepth, displacement);
+        // Track segments for later branching
+        std::vector<float> segmentVertices;
+        generateLightning(segmentVertices, startPos, endPos, maxDepth, displacement);
+
+        // Store segment pairs for potential branch points
+        for (size_t j = 0; j + 5 < segmentVertices.size(); j += 6) {
+            glm::vec3 segStart = {
+                segmentVertices[j],
+                segmentVertices[j + 1],
+                segmentVertices[j + 2]
+            };
+            glm::vec3 segEnd = {
+                segmentVertices[j + 3],
+                segmentVertices[j + 4],
+                segmentVertices[j + 5]
+            };
+            mainSegments.push_back({ segStart, segEnd });
+        }
+
+        lightningVertices.insert(lightningVertices.end(), segmentVertices.begin(), segmentVertices.end());
+    }
+
+    // Add branches using L-systems
+    for (const Segment& seg : mainSegments) {
+        float r = float(rand()) / float(RAND_MAX);
+        if (r < branchChance) {
+            glm::vec3 origin = (seg.start + seg.end) * 0.5f;
+            glm::vec3 direction = glm::normalize(seg.end - seg.start);
+
+            std::string lsystem = generateLSystem("F", lsystemIterations);
+            interpretLSystem(lsystem, origin, direction,segmentLength, angleVariance, lightningVertices);
+        }
     }
 
     // Upload to GPU
@@ -391,6 +457,7 @@ void updateLightning() {
     glBufferData(GL_ARRAY_BUFFER, lightningVertices.size() * sizeof(float), lightningVertices.data(), GL_DYNAMIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
+
 
 void renderLightning()
 {
@@ -400,7 +467,7 @@ void renderLightning()
     glBindVertexArray(VAO);
     
     // Main lightning (thick and bright)
-    glLineWidth(8.0f); 
+    glLineWidth(1.0f); 
     glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, glm::value_ptr(lightningColor));
     glDrawArrays(GL_LINE_STRIP, 0, lightningVertices.size() / 3);
     
@@ -417,6 +484,89 @@ void renderLightning()
     glDrawArrays(GL_LINE_STRIP, 0, lightningVertices.size() / 3);
     
     glBindVertexArray(0);
+}
+
+//----------------L system subbranching--------------------//
+std::string generateLSystem(const std::string& axiom, int iterations) {
+    std::string result = axiom;
+
+    for (int i = 0; i < iterations; ++i) {
+        std::string next;
+        for (char c : result) {
+            if (c == 'F') {
+                float r = float(rand()) / float(RAND_MAX);
+                if (r < probFF) {
+                    next += "FF";
+                }
+                else if (r < probFF + probPlus) {
+                    next += "F[+F]";
+                }
+                else {
+                    next += "F[-F]";
+                }
+            }
+            else {
+                next += c;
+            }
+        }
+        result = next;
+    }
+
+    return result;
+}
+
+void interpretLSystem(
+    const std::string& lsystem,
+    glm::vec3 origin,
+    glm::vec3 baseDirection,
+    float segmentLength,
+    float angleVariance,
+    std::vector<float>& outVertices
+) {
+    struct State {
+        glm::vec3 pos;
+        glm::vec3 dir;
+    };
+
+    std::stack<State> stateStack;
+    glm::vec3 currentPos = origin;
+    glm::vec3 currentDir = glm::normalize(baseDirection);
+
+    for (char c : lsystem) {
+        switch (c) {
+        case 'F': {
+            glm::vec3 nextPos = currentPos + currentDir * segmentLength;
+            outVertices.push_back(currentPos.x);
+            outVertices.push_back(currentPos.y);
+            outVertices.push_back(currentPos.z);
+            outVertices.push_back(nextPos.x);
+            outVertices.push_back(nextPos.y);
+            outVertices.push_back(nextPos.z);
+            currentPos = nextPos;
+            break;
+        }
+        case '+': {
+            float angle = angleVariance * ((float(rand()) / RAND_MAX));
+            currentDir = glm::rotate(currentDir, glm::radians(angle), glm::vec3(0.0f, 0.0f, 1.0f));
+            break;
+        }
+        case '-': {
+            float angle = angleVariance * ((float(rand()) / RAND_MAX));
+            currentDir = glm::rotate(currentDir, glm::radians(-angle), glm::vec3(0.0f, 0.0f, 1.0f));
+            break;
+        }
+        case '[':
+            stateStack.push({ currentPos, currentDir });
+            break;
+        case ']':
+            if (!stateStack.empty()) {
+                currentPos = stateStack.top().pos;
+                currentDir = stateStack.top().dir;
+                stateStack.pop();
+            }
+            break;
+        }
+    }
 }
 
 
