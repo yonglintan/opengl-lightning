@@ -382,6 +382,24 @@ void generateLightning(std::vector<float> &vertices, glm::vec3 start, glm::vec3 
         vertices.push_back(end.x);
         vertices.push_back(end.y);
         vertices.push_back(end.z);
+
+        // Generate branches using L-systems
+        float r = float(rand()) / float(RAND_MAX);
+        if (r > branchChance)
+        {
+            // Do not generate branches
+        }
+        else if (r < probPlus / probFF * branchChance)
+        {
+            std::string lsystem = generateLSystem("[+F]", lsystemIterations);
+            interpretLSystem(lsystem, start, glm::normalize(end - start), segmentLength, angleVariance, vertices);
+        }
+        else
+        {
+            std::string lsystem = generateLSystem("[-F]", lsystemIterations);
+            interpretLSystem(lsystem, start, glm::normalize(end - start), segmentLength, angleVariance, vertices);
+        }
+
         return;
     }
 
@@ -401,7 +419,7 @@ void updateLightning()
     lightningVertices.clear();
     std::vector<Segment> mainSegments;
 
-    // Generate main bolt
+    // Generate lightning between sticks
     for (size_t i = 0; i < sticks.size() - 1; ++i)
     {
         glm::vec3 startPos = {
@@ -414,39 +432,7 @@ void updateLightning()
             sticks[i + 1].position.y + sticks[i + 1].height,
             sticks[i + 1].position.z};
 
-        // Track segments for later branching
-        std::vector<float> segmentVertices;
-        generateLightning(segmentVertices, startPos, endPos, maxDepth, displacement);
-
-        // Store segment pairs for potential branch points
-        for (size_t j = 0; j + 5 < segmentVertices.size(); j += 6)
-        {
-            glm::vec3 segStart = {
-                segmentVertices[j],
-                segmentVertices[j + 1],
-                segmentVertices[j + 2]};
-            glm::vec3 segEnd = {
-                segmentVertices[j + 3],
-                segmentVertices[j + 4],
-                segmentVertices[j + 5]};
-            mainSegments.push_back({segStart, segEnd});
-        }
-
-        lightningVertices.insert(lightningVertices.end(), segmentVertices.begin(), segmentVertices.end());
-    }
-
-    // Add branches using L-systems
-    for (const Segment &seg : mainSegments)
-    {
-        float r = float(rand()) / float(RAND_MAX);
-        if (r < branchChance)
-        {
-            glm::vec3 origin = (seg.start + seg.end) * 0.5f;
-            glm::vec3 direction = glm::normalize(seg.end - seg.start);
-
-            std::string lsystem = generateLSystem("F", lsystemIterations);
-            interpretLSystem(lsystem, origin, direction, segmentLength, angleVariance, lightningVertices);
-        }
+        generateLightning(lightningVertices, startPos, endPos, maxDepth, displacement);
     }
 
     // Upload to GPU
@@ -465,19 +451,19 @@ void renderLightning()
     // Main lightning (thick and bright)
     glLineWidth(1.0f);
     glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, glm::value_ptr(lightningColor));
-    glDrawArrays(GL_LINE_STRIP, 0, lightningVertices.size() / 3);
+    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 3);
 
     // Glow effect (slightly transparent and thinner)
     glLineWidth(5.0f);
     glm::vec3 glowColor = lightningColor * 1.5f;
     glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, glm::value_ptr(glowColor));
-    glDrawArrays(GL_LINE_STRIP, 0, lightningVertices.size() / 3);
+    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 3);
 
     // Core lightning (very bright and thin)
     glLineWidth(2.0f);
     glm::vec3 coreColor = lightningColor * 2.0f;
     glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, glm::value_ptr(coreColor));
-    glDrawArrays(GL_LINE_STRIP, 0, lightningVertices.size() / 3);
+    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 3);
 
     glBindVertexArray(0);
 }
