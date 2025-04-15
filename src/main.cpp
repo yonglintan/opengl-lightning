@@ -26,7 +26,7 @@ void processInput(GLFWwindow *window);
 void generateLightning(std::vector<float> &vertices, glm::vec3 start, glm::vec3 end, int depth, float displacement);
 void updateLightning();
 void setupOpenGL();
-void renderLightning();
+void renderLightning(const glm::mat4 &view, const glm::mat4 &projection);
 std::string generateLSystem(const std::string &axiom, int iterations);
 void interpretLSystem(
     const std::string &lsystem,
@@ -92,9 +92,16 @@ struct Stick
     glm::vec3 color;    // Color of the stick
 };
 
+struct Vertex
+{
+    glm::vec3 position;
+    glm::vec3 normal;
+};
+
 // Stick Global Variables
 std::vector<Stick> sticks;
-unsigned int stickVAO, stickVBO;
+unsigned int stickVAO, stickVBO, stickEBO;
+std::vector<unsigned int> stickIndices;
 unsigned int stickShaderProgram;
 glm::vec3 stickColor = glm::vec3(0.6f, 0.4f, 0.2f); // Brown color for sticks
 int numSticks = 2;                                  // Start with two sticks: source and destination
@@ -355,7 +362,7 @@ int main()
 
         renderGroundPlane(view, projection);
         renderSticks(view, projection);
-        renderLightning();
+        renderLightning(view, projection);
         renderParticles();
 
         ImGui::Render();
@@ -441,9 +448,15 @@ void updateLightning()
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
-void renderLightning()
+void renderLightning(const glm::mat4 &view, const glm::mat4 &projection)
 {
     glUseProgram(shaderProgram);
+
+    // Reset uniform variables
+    const glm::mat4 model = glm::mat4(1.0f);
+    glUniformMatrix4fv(glGetUniformLocation(stickShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+    glUniformMatrix4fv(glGetUniformLocation(stickShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+    glUniformMatrix4fv(glGetUniformLocation(stickShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
 
     // Render multiple passes for a glow effect
     glBindVertexArray(VAO);
@@ -847,6 +860,90 @@ void renderGroundPlane(const glm::mat4 &view, const glm::mat4 &projection)
     glBindVertexArray(0);
 }
 
+void generateCylinderMesh(float radius, float height, int segments,
+                          std::vector<Vertex> &vertices,
+                          std::vector<unsigned int> &indices)
+{
+    // Top center vertex
+    vertices.push_back({glm::vec3(0, height, 0), glm::vec3(0, 1, 0)});
+    int topCenterIndex = 0;
+
+    // Top circle
+    for (int i = 0; i <= segments; ++i)
+    {
+        float angle = 2.0f * glm::pi<float>() * i / segments;
+        float x = radius * cos(angle);
+        float z = radius * sin(angle);
+        glm::vec3 pos = glm::vec3(x, height, z);
+        vertices.push_back({pos, glm::vec3(0, 1, 0)});
+    }
+
+    // Bottom center vertex
+    int bottomCenterIndex = vertices.size();
+    vertices.push_back({glm::vec3(0, 0, 0), glm::vec3(0, -1, 0)});
+
+    // Bottom circle
+    for (int i = 0; i <= segments; ++i)
+    {
+        float angle = 2.0f * glm::pi<float>() * i / segments;
+        float x = radius * cos(angle);
+        float z = radius * sin(angle);
+        glm::vec3 pos = glm::vec3(x, 0, z);
+        vertices.push_back({pos, glm::vec3(0, -1, 0)});
+    }
+
+    // Side surface
+    int sideStartIndex = vertices.size();
+    for (int i = 0; i <= segments; ++i)
+    {
+        float angle = 2.0f * glm::pi<float>() * i / segments;
+        float x = radius * cos(angle);
+        float z = radius * sin(angle);
+        glm::vec3 normal = glm::normalize(glm::vec3(x, 0, z));
+
+        glm::vec3 topPos = glm::vec3(x, height, z);
+        glm::vec3 bottomPos = glm::vec3(x, 0, z);
+
+        vertices.push_back({topPos, normal});
+        vertices.push_back({bottomPos, normal});
+    }
+
+    // Top cap triangle fan indices
+    for (int i = 1; i <= segments; ++i)
+    {
+        indices.push_back(topCenterIndex);
+        indices.push_back(i);
+        indices.push_back(i + 1);
+    }
+
+    // Bottom cap triangle fan indices
+    for (int i = 1; i <= segments; ++i)
+    {
+        indices.push_back(bottomCenterIndex);
+        indices.push_back(bottomCenterIndex + i + 1);
+        indices.push_back(bottomCenterIndex + i);
+    }
+
+    // Side triangle strips indices
+    for (int i = 0; i < segments; ++i)
+    {
+        int top = sideStartIndex + i * 2;
+        int bottom = top + 1;
+        int nextTop = top + 2;
+        int nextBottom = bottom + 2;
+
+        // Triangle 1
+        indices.push_back(top);
+        indices.push_back(bottom);
+        indices.push_back(nextTop);
+
+        // Triangle 2
+        indices.push_back(nextTop);
+        indices.push_back(bottom);
+        indices.push_back(nextBottom);
+    }
+}
+
 void setupSticks()
 {
     // Create initial sticks
@@ -866,9 +963,31 @@ void setupSticks()
     destStick.color = stickColor;
     sticks.push_back(destStick);
 
-    // Create VAO and VBO for sticks
-    glGenVertexArrays(1, &stickVAO);
+    std::vector<Vertex> cylinderVertices;
+
+    generateCylinderMesh(0.02f, 1.0f, 10, cylinderVertices, stickIndices);
+
+    // Create VAO, VBO, and EBO for sticks
     glGenBuffers(1, &stickVBO);
+    glGenBuffers(1, &stickEBO);
+    glGenVertexArrays(1, &stickVAO);
+
+    // Configure VAO
+    glBindVertexArray(stickVAO);
+
+    glBindBuffer(GL_ARRAY_BUFFER, stickVBO);
+    glBufferData(GL_ARRAY_BUFFER, cylinderVertices.size() * sizeof(Vertex), cylinderVertices.data(), GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, stickEBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, stickIndices.size() * sizeof(unsigned int), stickIndices.data(), GL_STATIC_DRAW);
+
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, position));
+    glEnableVertexAttribArray(0);
+
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, normal));
+    glEnableVertexAttribArray(1);
+
+    glBindVertexArray(0);
 
     // Compile shader for sticks - we can reuse the lightning shader for simplicity
     stickShaderProgram = shaderProgram;
@@ -887,36 +1006,25 @@ void renderSticks(const glm::mat4 &view, const glm::mat4 &projection)
 {
     glUseProgram(stickShaderProgram);
 
-    glm::mat4 model = glm::mat4(1.0f);
-    glUniformMatrix4fv(glGetUniformLocation(stickShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
     glUniformMatrix4fv(glGetUniformLocation(stickShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
     glUniformMatrix4fv(glGetUniformLocation(stickShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
 
-    // Render each stick as a line
     glBindVertexArray(stickVAO);
 
     for (const auto &stick : sticks)
     {
-        // Create vertices for a line from bottom to top of stick
-        float stickVertices[] = {
-            stick.position.x, stick.position.y, stick.position.z,               // Bottom
-            stick.position.x, stick.position.y + stick.height, stick.position.z // Top
-        };
-
-        // Update buffer with current stick vertices
-        glBindBuffer(GL_ARRAY_BUFFER, stickVBO);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(stickVertices), stickVertices, GL_DYNAMIC_DRAW);
-
-        // Set position attribute
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void *)0);
+        // Create model matrix for each stick by translating to stick position and scaling to stick height
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), stick.position);
+        model = glm::scale(model, glm::vec3(1.0f, stick.height, 1.0f));
+        glUniformMatrix4fv(glGetUniformLocation(stickShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
 
         // Set stick color
         glUniform3fv(glGetUniformLocation(stickShaderProgram, "lightningColor"), 1, glm::value_ptr(stick.color));
 
-        // Draw thick line
-        glLineWidth(5.0f);
-        glDrawArrays(GL_LINES, 0, 2);
+        // Draw stick as cylinder
+        glDrawElements(GL_TRIANGLES, stickIndices.size(), GL_UNSIGNED_INT, 0);
+
+        // TODO: Lightning effect on the stick. Edit/create different shader if required.
     }
 
     glBindVertexArray(0);
