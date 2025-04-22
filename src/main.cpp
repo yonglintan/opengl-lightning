@@ -25,6 +25,7 @@ void framebuffer_size_callback(GLFWwindow *window, int width, int height);
 void processInput(GLFWwindow *window);
 void generateLightning(std::vector<float> &vertices, glm::vec3 start, glm::vec3 end, int depth, float displacement);
 void updateLightning();
+void addNormalsToLightning();
 void setupOpenGL();
 void renderLightning(const glm::mat4 &view, const glm::mat4 &projection);
 std::string generateLSystem(const std::string &axiom, int iterations);
@@ -51,6 +52,9 @@ void updateStickPositions();
 // Settings
 const unsigned int SCR_WIDTH = 800;
 const unsigned int SCR_HEIGHT = 600;
+
+//Light parameters
+float emissionStrength = 1.5f; // Adjust for desired glow intensity
 
 // Lightning parameters (adjustable via UI)
 int maxDepth = 5;
@@ -118,6 +122,7 @@ float particleLifetime = 1.0f;
 // OpenGL objects
 unsigned int VAO, VBO, shaderProgram;
 std::vector<float> lightningVertices;
+std::vector<glm::vec3> lightningLightPositions;
 
 // Camera settings
 glm::vec3 cameraPos = glm::vec3(2.0f, 2.0f, 2.0f); // Diagonal view
@@ -135,25 +140,67 @@ bool isAutoRegenerating = false;
 const char *vertexShaderSource = R"(
 #version 330 core
 layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec3 aNormal;  // Add normal attribute
+
+out vec3 FragPos;      // Fragment position in world space
+out vec3 Normal;       // Fragment normal
+
 uniform mat4 model;
 uniform mat4 view;
 uniform mat4 projection;
+
 void main()
 {
+    FragPos = vec3(model * vec4(aPos, 1.0));
+    Normal = mat3(transpose(inverse(model))) * aNormal;  // Transform normal to world space
     gl_Position = projection * view * model * vec4(aPos, 1.0);
 }
 )";
 
 // Fragment Shader
 const char *fragmentShaderSource = R"(
-#version 330 core
-out vec4 FragColor;
-uniform vec3 lightningColor;
-void main()
-{
-    FragColor = vec4(lightningColor, 1.0);
-}
-)";
+    #version 330 core
+    out vec4 FragColor;
+    
+    in vec3 FragPos;
+    in vec3 Normal;
+    
+    uniform vec3 lightningColor;
+    uniform vec3 lightPos;
+    uniform vec3 viewPos;
+    uniform float emissionStrength;  // Add this uniform
+    
+    void main()
+    {
+        // Ambient lighting
+        float ambientStrength = 0.2;
+        vec3 ambient = ambientStrength * lightningColor;
+          
+        // Diffuse lighting
+        vec3 norm = normalize(Normal);
+        vec3 lightDir = normalize(lightPos - FragPos);
+        float diff = max(dot(norm, lightDir), 0.0);
+        vec3 diffuse = diff * lightningColor;
+        
+        // Specular lighting
+        float specularStrength = 0.5;
+        vec3 viewDir = normalize(viewPos - FragPos);
+        vec3 reflectDir = reflect(-lightDir, norm);  
+        float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32);
+        vec3 specular = specularStrength * spec * vec3(1.0, 1.0, 1.0);
+        
+        // Add emission for self-illumination
+        vec3 emission = lightningColor * emissionStrength;
+            
+        // Combine all lighting components
+        vec3 result = (ambient + diffuse + specular) * lightningColor + emission;
+        
+        // Ensure we're not exceeding 1.0 in brightness
+        // result = min(result, vec3(1.0));  // Optional, remove for HDR effect
+        
+        FragColor = vec4(result, 1.0);
+    }
+    )";
 
 // Particle Vertex Shader
 const char *particleVertexShaderSource = R"(
@@ -294,6 +341,7 @@ int main()
         ImGui::Begin("Lightning Settings");
         ImGui::SliderInt("Max Depth", &maxDepth, 1, 10);
         ImGui::SliderFloat("Displacement", &displacement, 0.0f, 5.0f);
+        ImGui::SliderFloat("Emission Strength", &emissionStrength, 0.0f, 5.0f);
         ImGui::ColorEdit3("Color", glm::value_ptr(lightningColor), ImGuiColorEditFlags_NoInputs);
 
         // Add Branch controls
@@ -420,15 +468,11 @@ void generateLightning(std::vector<float> &vertices, glm::vec3 start, glm::vec3 
 
 void updateLightning()
 {
-    if (sticks.size() < 2)
-        return;
-
     lightningVertices.clear();
-    std::vector<Segment> mainSegments;
-
-    // Generate lightning between sticks
-    for (size_t i = 0; i < sticks.size() - 1; ++i)
-    {
+    lightningLightPositions.clear();
+    
+    // Your existing code to generate lightning
+    for (size_t i = 0; i < sticks.size() - 1; ++i) {
         glm::vec3 startPos = {
             sticks[i].position.x,
             sticks[i].position.y + sticks[i].height,
@@ -441,6 +485,18 @@ void updateLightning()
 
         generateLightning(lightningVertices, startPos, endPos, maxDepth, displacement);
     }
+    
+    // Add normals to lightning
+    addNormalsToLightning();
+
+    // Add light sources along the lightning path
+    for (size_t i = 0; i < lightningVertices.size(); i += 12) { // Every other vertex
+        if (i + 3 >= lightningVertices.size()) break;
+        
+        // Get position
+        glm::vec3 pos(lightningVertices[i], lightningVertices[i+1], lightningVertices[i+2]);
+        lightningLightPositions.push_back(pos);
+    }
 
     // Upload to GPU
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
@@ -448,36 +504,106 @@ void updateLightning()
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
+void addNormalsToLightning() {
+    std::vector<float> lightningWithNormals;
+    
+    for (size_t i = 0; i < lightningVertices.size(); i += 6) {
+        glm::vec3 start(lightningVertices[i], lightningVertices[i+1], lightningVertices[i+2]);
+        glm::vec3 end(lightningVertices[i+3], lightningVertices[i+4], lightningVertices[i+5]);
+        
+        // Calculate a direction vector
+        glm::vec3 direction = glm::normalize(end - start);
+        
+        // Find a perpendicular vector for the normal
+        glm::vec3 normal;
+        if (std::abs(direction.x) < std::abs(direction.y) && std::abs(direction.x) < std::abs(direction.z))
+            normal = glm::normalize(glm::cross(direction, glm::vec3(1, 0, 0)));
+        else
+            normal = glm::normalize(glm::cross(direction, glm::vec3(0, 1, 0)));
+        
+        // Add vertex position and normal for start point
+        lightningWithNormals.push_back(start.x);
+        lightningWithNormals.push_back(start.y);
+        lightningWithNormals.push_back(start.z);
+        lightningWithNormals.push_back(normal.x);
+        lightningWithNormals.push_back(normal.y);
+        lightningWithNormals.push_back(normal.z);
+        
+        // Add vertex position and normal for end point
+        lightningWithNormals.push_back(end.x);
+        lightningWithNormals.push_back(end.y);
+        lightningWithNormals.push_back(end.z);
+        lightningWithNormals.push_back(normal.x);
+        lightningWithNormals.push_back(normal.y);
+        lightningWithNormals.push_back(normal.z);
+    }
+    
+    // Use the new data with normals
+    lightningVertices = lightningWithNormals;
+}
+
 void renderLightning(const glm::mat4 &view, const glm::mat4 &projection)
 {
     glUseProgram(shaderProgram);
 
-    // Reset uniform variables
-    const glm::mat4 model = glm::mat4(1.0f);
-    glUniformMatrix4fv(glGetUniformLocation(stickShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
-    glUniformMatrix4fv(glGetUniformLocation(stickShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
-    glUniformMatrix4fv(glGetUniformLocation(stickShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-
-    // Render multiple passes for a glow effect
-    glBindVertexArray(VAO);
-
-    // Main lightning (thick and bright)
-    glLineWidth(1.0f);
+    // Set model, view, projection matrices
+    glm::mat4 model = glm::mat4(1.0f);
+    glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+    glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+    glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+    
+    // Set lightning color
     glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, glm::value_ptr(lightningColor));
-    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 3);
+    
+    // Set light position
+    glm::vec3 lightPos = glm::vec3(0.0f, 5.0f, 0.0f);
+    glUniform3fv(glGetUniformLocation(shaderProgram, "lightPos"), 1, glm::value_ptr(lightPos));
+    
+    // Set view position
+    glUniform3fv(glGetUniformLocation(shaderProgram, "viewPos"), 1, glm::value_ptr(cameraPos));
+    
+    // Set emission strength
+    glUniform1f(glGetUniformLocation(shaderProgram, "emissionStrength"), emissionStrength);
 
-    // Glow effect (slightly transparent and thinner)
-    glLineWidth(5.0f);
-    glm::vec3 glowColor = lightningColor * 1.5f;
-    glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, glm::value_ptr(glowColor));
-    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 3);
+    // Enable additive blending for glow effect
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    
+    // Render lightning
+    glBindVertexArray(VAO);
+    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 6);
+    
+    // Reset to default blending
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    
+    glBindVertexArray(0);
 
-    // Core lightning (very bright and thin)
-    glLineWidth(2.0f);
-    glm::vec3 coreColor = lightningColor * 2.0f;
-    glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, glm::value_ptr(coreColor));
-    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 3);
-
+    // First pass - core lightning (thinner, brighter)
+    glLineWidth(1.0f);
+    glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, 
+                 glm::value_ptr(lightningColor * 1.5f)); // Brighter core
+    glUniform1f(glGetUniformLocation(shaderProgram, "emissionStrength"), emissionStrength * 1.5f);
+    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 6);
+    
+    // Second pass - middle glow (medium thickness)
+    glLineWidth(3.0f);
+    glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, 
+                 glm::value_ptr(lightningColor * 1.2f));
+    glUniform1f(glGetUniformLocation(shaderProgram, "emissionStrength"), emissionStrength);
+    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 6);
+    
+    // Third pass - outer glow (thicker, dimmer)
+    glLineWidth(6.0f);
+    glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, 
+                 glm::value_ptr(lightningColor * 0.8f));
+    glUniform1f(glGetUniformLocation(shaderProgram, "emissionStrength"), emissionStrength * 0.5f);
+    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 6);
+    
+    // Reset to default settings
+    glLineWidth(1.0f);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, glm::value_ptr(lightningColor));
+    
     glBindVertexArray(0);
 }
 
@@ -654,8 +780,13 @@ void setupOpenGL()
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
     glBufferData(GL_ARRAY_BUFFER, 0, NULL, GL_DYNAMIC_DRAW);
 
+    // Position attribute (3 floats)
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void *)0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
+    
+    // Normal attribute (3 floats)
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
@@ -710,7 +841,7 @@ void initParticleSystem()
 void emitParticlesAlongLightning()
 {
     // Emit particles along the lightning path
-    for (size_t i = 0; i < lightningVertices.size(); i += 3)
+    for (size_t i = 0; i < lightningVertices.size(); i += 6) // Changed from i+=3 to i+=6 for normals
     {
         // Skip some vertices to avoid too many particles
         if (rand() % 3 != 0)
@@ -728,11 +859,12 @@ void emitParticlesAlongLightning()
                                       sin(randomAngle) * randomSpeed,
                                       (static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 0.05f);
 
-        // Slight color variation
-        float colorVariation = 0.85f + static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * 0.15f;
-        particle.color = lightningColor * colorVariation;
+        // Brighter color variation for glow effect
+        float colorVariation = 0.9f + static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * 0.3f;
+        particle.color = lightningColor * colorVariation * 1.5f; // Brighter particles
 
         // Random size and life
+        particle.size = 0.05f + static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * 0.1f; // Add size variation
         particle.maxLife = particleLifetime * (0.5f + static_cast<float>(rand()) / static_cast<float>(RAND_MAX));
         particle.life = particle.maxLife;
 
