@@ -118,7 +118,7 @@ float particleEmissionRate = 0.05f;
 float particleLifetime = 1.0f;
 
 // OpenGL objects
-unsigned int VAO, VBO, shaderProgram;
+unsigned int VAO, VBO, lightningShaderProgram;
 std::vector<float> lightningVertices;
 
 // Camera settings
@@ -134,7 +134,7 @@ bool isDragging = false;
 bool isAutoRegenerating = false;
 
 // Vertex Shader (MVP Transform)
-const char *vertexShaderSource = R"(
+const char *lightningVertexShaderSource = R"(
 #version 330 core
 layout (location = 0) in vec3 aPos;
 uniform mat4 model;
@@ -147,7 +147,7 @@ void main()
 )";
 
 // Fragment Shader
-const char *fragmentShaderSource = R"(
+const char *lightningFragmentShaderSource = R"(
 #version 330 core
 out vec4 FragColor;
 uniform vec3 lightningColor;
@@ -302,23 +302,45 @@ const char *planeFragmentShaderSource = R"(
     }
     )";
 
-void compileShader()
+unsigned int compileAndLinkShaders(const char *vertexShaderSource, const char *fragmentShaderSource)
 {
     unsigned int vertexShader = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
     glCompileShader(vertexShader);
+    int success;
+    char infoLog[512];
+    glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
+    if (!success)
+    {
+        glGetShaderInfoLog(vertexShader, 512, NULL, infoLog);
+        std::cerr << "ERROR::SHADER::VERTEX::COMPILATION_FAILED\n" << infoLog << std::endl;
+    }
 
     unsigned int fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
     glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
     glCompileShader(fragmentShader);
+    glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
+    if (!success)
+    {
+        glGetShaderInfoLog(fragmentShader, 512, NULL, infoLog);
+        std::cerr << "ERROR::SHADER::FRAGMENT::COMPILATION_FAILED\n" << infoLog << std::endl;
+    }
 
-    shaderProgram = glCreateProgram();
+    unsigned int shaderProgram = glCreateProgram();
     glAttachShader(shaderProgram, vertexShader);
     glAttachShader(shaderProgram, fragmentShader);
     glLinkProgram(shaderProgram);
+    glGetProgramiv(shaderProgram, GL_LINK_STATUS, &success);
+    if (!success)
+    {
+        glGetProgramInfoLog(shaderProgram, 512, NULL, infoLog);
+        std::cerr << "ERROR::SHADER::PROGRAM::LINKING_FAILED\n" << infoLog << std::endl;
+    }
 
     glDeleteShader(vertexShader);
     glDeleteShader(fragmentShader);
+
+    return shaderProgram;
 }
 
 int main()
@@ -346,7 +368,7 @@ int main()
         return -1;
     }
 
-    compileShader();
+    lightningShaderProgram = compileAndLinkShaders(lightningVertexShaderSource, lightningFragmentShaderSource);
     setupOpenGL();
     setupGroundPlane();
     setupSticks();
@@ -429,15 +451,16 @@ int main()
         }
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        glUseProgram(shaderProgram);
+        glUseProgram(lightningShaderProgram);
 
         glm::mat4 model = glm::mat4(1.0f);
         glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
         glm::mat4 projection = glm::perspective(glm::radians(45.0f), (float)SCR_WIDTH / SCR_HEIGHT, 0.1f, 100.0f);
-        glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, glm::value_ptr(lightningColor));
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+        glUniform3fv(glGetUniformLocation(lightningShaderProgram, "lightningColor"), 1, glm::value_ptr(lightningColor));
+        glUniformMatrix4fv(glGetUniformLocation(lightningShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+        glUniformMatrix4fv(glGetUniformLocation(lightningShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+        glUniformMatrix4fv(glGetUniformLocation(lightningShaderProgram, "projection"), 1, GL_FALSE,
+                           glm::value_ptr(projection));
 
         if (isAutoRegenerating)
         {
@@ -531,32 +554,26 @@ void updateLightning()
 
 void renderLightning(const glm::mat4 &view, const glm::mat4 &projection)
 {
-    glUseProgram(shaderProgram);
-
-    // Reset uniform variables
-    const glm::mat4 model = glm::mat4(1.0f);
-    glUniformMatrix4fv(glGetUniformLocation(stickShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
-    glUniformMatrix4fv(glGetUniformLocation(stickShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
-    glUniformMatrix4fv(glGetUniformLocation(stickShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+    glUseProgram(lightningShaderProgram);
 
     // Render multiple passes for a glow effect
     glBindVertexArray(VAO);
 
     // Main lightning (thick and bright)
     glLineWidth(1.0f);
-    glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, glm::value_ptr(lightningColor));
+    glUniform3fv(glGetUniformLocation(lightningShaderProgram, "lightningColor"), 1, glm::value_ptr(lightningColor));
     glDrawArrays(GL_LINES, 0, lightningVertices.size() / 3);
 
     // Glow effect (slightly transparent and thinner)
     glLineWidth(5.0f);
     glm::vec3 glowColor = lightningColor * 1.5f;
-    glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, glm::value_ptr(glowColor));
+    glUniform3fv(glGetUniformLocation(lightningShaderProgram, "lightningColor"), 1, glm::value_ptr(glowColor));
     glDrawArrays(GL_LINES, 0, lightningVertices.size() / 3);
 
     // Core lightning (very bright and thin)
     glLineWidth(2.0f);
     glm::vec3 coreColor = lightningColor * 2.0f;
-    glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, glm::value_ptr(coreColor));
+    glUniform3fv(glGetUniformLocation(lightningShaderProgram, "lightningColor"), 1, glm::value_ptr(coreColor));
     glDrawArrays(GL_LINES, 0, lightningVertices.size() / 3);
 
     glBindVertexArray(0);
@@ -745,21 +762,7 @@ void framebuffer_size_callback(GLFWwindow *window, int width, int height)
 void initParticleSystem()
 {
     // Compile particle shaders
-    unsigned int particleVertexShader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(particleVertexShader, 1, &particleVertexShaderSource, NULL);
-    glCompileShader(particleVertexShader);
-
-    unsigned int particleFragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(particleFragmentShader, 1, &particleFragmentShaderSource, NULL);
-    glCompileShader(particleFragmentShader);
-
-    particleShaderProgram = glCreateProgram();
-    glAttachShader(particleShaderProgram, particleVertexShader);
-    glAttachShader(particleShaderProgram, particleFragmentShader);
-    glLinkProgram(particleShaderProgram);
-
-    glDeleteShader(particleVertexShader);
-    glDeleteShader(particleFragmentShader);
+    particleShaderProgram = compileAndLinkShaders(particleVertexShaderSource, particleFragmentShaderSource);
 
     // Create VAO and VBO for particles
     glGenVertexArrays(1, &particleVAO);
@@ -886,21 +889,7 @@ void setupGroundPlane()
     };
 
     // Create shader program
-    unsigned int planeVertexShader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(planeVertexShader, 1, &planeVertexShaderSource, NULL);
-    glCompileShader(planeVertexShader);
-
-    unsigned int planeFragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(planeFragmentShader, 1, &planeFragmentShaderSource, NULL);
-    glCompileShader(planeFragmentShader);
-
-    planeShaderProgram = glCreateProgram();
-    glAttachShader(planeShaderProgram, planeVertexShader);
-    glAttachShader(planeShaderProgram, planeFragmentShader);
-    glLinkProgram(planeShaderProgram);
-
-    glDeleteShader(planeVertexShader);
-    glDeleteShader(planeFragmentShader);
+    planeShaderProgram = compileAndLinkShaders(planeVertexShaderSource, planeFragmentShaderSource);
 
     // Create VAO/VBO
     unsigned int planeEBO;
@@ -1068,41 +1057,7 @@ void setupSticks()
     glBindVertexArray(0);
 
     // Create shader program
-    unsigned int stickVertexShader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(stickVertexShader, 1, &stickVertexShaderSource, NULL);
-    glCompileShader(stickVertexShader);
-    int success;
-    char infoLog[512];
-    glGetShaderiv(stickVertexShader, GL_COMPILE_STATUS, &success);
-    if (!success)
-    {
-        glGetShaderInfoLog(stickVertexShader, 512, NULL, infoLog);
-        std::cerr << "ERROR::SHADER::VERTEX::COMPILATION_FAILED\n" << infoLog << std::endl;
-    }
-
-    unsigned int stickFragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(stickFragmentShader, 1, &stickFragmentShaderSource, NULL);
-    glCompileShader(stickFragmentShader);
-    glGetShaderiv(stickFragmentShader, GL_COMPILE_STATUS, &success);
-    if (!success)
-    {
-        glGetShaderInfoLog(stickFragmentShader, 512, NULL, infoLog);
-        std::cerr << "ERROR::SHADER::FRAGMENT::COMPILATION_FAILED\n" << infoLog << std::endl;
-    }
-
-    stickShaderProgram = glCreateProgram();
-    glAttachShader(stickShaderProgram, stickVertexShader);
-    glAttachShader(stickShaderProgram, stickFragmentShader);
-    glLinkProgram(stickShaderProgram);
-    glGetProgramiv(shaderProgram, GL_LINK_STATUS, &success);
-    if (!success)
-    {
-        glGetProgramInfoLog(shaderProgram, 512, NULL, infoLog);
-        std::cerr << "ERROR::SHADER::PROGRAM::LINKING_FAILED\n" << infoLog << std::endl;
-    }
-
-    glDeleteShader(stickVertexShader);
-    glDeleteShader(stickFragmentShader);
+    stickShaderProgram = compileAndLinkShaders(stickVertexShaderSource, stickFragmentShaderSource);
 }
 
 void addStick()
