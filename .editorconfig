@@ -1,0 +1,10 @@
+root = true
+
+[*]
+indent_style = space
+encoding = utf-8
+insert_final_newline = true
+
+[*.{c,cpp,h,hpp}]
+indent_size = 4
+trim_trailing_whitespace = true
