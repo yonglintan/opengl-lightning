@@ -1,12 +1,16 @@
+// clang-format off
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
-#include <vector>
-#include <iostream>
+// clang-format on
+
+// C++ standard headers
 #include <cmath>
 #include <cstdlib>
+#include <iostream>
+#include <stack>
 #include <string>
 #include <unordered_map>
-#include <stack>
+#include <vector>
 
 // OpenGL Math Library (GLM)
 #define GLM_ENABLE_EXPERIMENTAL
@@ -29,13 +33,8 @@ void addNormalsToLightning();
 void setupOpenGL();
 void renderLightning(const glm::mat4 &view, const glm::mat4 &projection);
 std::string generateLSystem(const std::string &axiom, int iterations);
-void interpretLSystem(
-    const std::string &lsystem,
-    glm::vec3 origin,
-    glm::vec3 baseDirection,
-    float segmentLength,
-    float angleVariance,
-    std::vector<float> &outVertices);
+void interpretLSystem(const std::string &lsystem, glm::vec3 origin, glm::vec3 baseDirection, float segmentLength,
+                      float angleVariance, std::vector<float> &outVertices);
 void mouse_callback(GLFWwindow *window, double xpos, double ypos);
 void initParticleSystem();
 void emitParticlesAlongLightning();
@@ -53,8 +52,8 @@ void updateStickPositions();
 const unsigned int SCR_WIDTH = 800;
 const unsigned int SCR_HEIGHT = 600;
 
-//Light parameters
-float emissionStrength = 1.5f; // Adjust for desired glow intensity
+glm::vec3 lightDirection = glm::normalize(glm::vec3(-0.3f, -0.8f, -0.5f)); // Example direction
+glm::vec3 globalLightColor = glm::vec3(1.0f, 1.0f, 1.0f);                  // White light
 
 // Lightning parameters (adjustable via UI)
 int maxDepth = 5;
@@ -120,7 +119,7 @@ float particleEmissionRate = 0.05f;
 float particleLifetime = 1.0f;
 
 // OpenGL objects
-unsigned int VAO, VBO, shaderProgram;
+unsigned int VAO, VBO, lightningShaderProgram;
 std::vector<float> lightningVertices;
 std::vector<glm::vec3> lightningLightPositions;
 
@@ -137,7 +136,7 @@ bool isDragging = false;
 bool isAutoRegenerating = false;
 
 // Vertex Shader (MVP Transform)
-const char *vertexShaderSource = R"(
+const char *lightningVertexShaderSource = R"(
 #version 330 core
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;  // Add normal attribute
@@ -158,49 +157,99 @@ void main()
 )";
 
 // Fragment Shader
-const char *fragmentShaderSource = R"(
+const char *lightningFragmentShaderSource = R"(
+#version 330 core
+out vec4 FragColor;
+uniform vec3 lightningColor;
+void main()
+{
+    FragColor = vec4(lightningColor, 1.0);
+}
+)";
+
+// Stick Vertex Shader
+const char *stickVertexShaderSource = R"(
     #version 330 core
-    out vec4 FragColor;
-    
-    in vec3 FragPos;
-    in vec3 Normal;
-    
-    uniform vec3 lightningColor;
-    uniform vec3 lightPos;
-    uniform vec3 viewPos;
-    uniform float emissionStrength;  // Add this uniform
-    
+    layout (location = 0) in vec3 aPos;    // Vertex Position (object space)
+    layout (location = 1) in vec3 aNormal; // Vertex Normal (object space)
+
+    uniform mat4 model;      // Transforms object to world space
+    uniform mat4 view;       // Transforms world to view space
+    uniform mat4 projection; // Transforms view to clip space
+
+    // Output to Fragment Shader
+    out vec3 FragPos;       // Fragment's position in World Space
+    out vec3 Normal;        // Fragment's normal in World Space
+
     void main()
     {
-        // Ambient lighting
-        float ambientStrength = 0.2;
-        vec3 ambient = ambientStrength * lightningColor;
-          
-        // Diffuse lighting
+        // Calculate world position of the vertex
+        FragPos = vec3(model * vec4(aPos, 1.0));
+
+        // Calculate world normal: Use inverse transpose of model matrix's upper 3x3
+        // This correctly handles non-uniform scaling (like scaling only height)
+        Normal = mat3(transpose(inverse(model))) * aNormal;
+        // We will normalize the Normal vector in the fragment shader after interpolation
+
+        // Calculate final clip space position
+        gl_Position = projection * view * vec4(FragPos, 1.0);
+    }
+)";
+
+// Stick Fragment Shader
+const char *stickFragmentShaderSource = R"(
+    #version 330 core
+    out vec4 FragColor;
+
+    // Input from Vertex Shader (interpolated)
+    in vec3 FragPos;  // World space position of the fragment
+    in vec3 Normal;   // World space normal of the fragment
+
+    // Material Properties (passed from C++)
+    uniform vec3 objectColor; // Base color of the stick
+    uniform vec3 diffuseColor;
+    uniform vec3 specularColor;
+    uniform float shininess;
+
+    // Light Properties (passed from C++)
+    uniform vec3 lightDir;   // Direction *FROM* the light source (normalized)
+    uniform vec3 lightColor; // Color of the light (e.g., white vec3(1.0))
+
+    // Viewer Properties (passed from C++)
+    uniform vec3 viewPos;    // Camera position in world space
+
+    void main()
+    {
+        // --- Phong Lighting Calculation ---
+
+        // Ambient component (constant low light)
+        float ambientStrength = 0.15; // Can adjust
+        vec3 ambient = ambientStrength * lightColor;
+
+        // Diffuse component (light hitting the surface)
         vec3 norm = normalize(Normal);
-        vec3 lightDir = normalize(lightPos - FragPos);
-        float diff = max(dot(norm, lightDir), 0.0);
-        vec3 diffuse = diff * lightningColor;
-        
-        // Specular lighting
-        float specularStrength = 0.5;
-        vec3 viewDir = normalize(viewPos - FragPos);
-        vec3 reflectDir = reflect(-lightDir, norm);  
-        float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32);
-        vec3 specular = specularStrength * spec * vec3(1.0, 1.0, 1.0);
-        
-        // Add emission for self-illumination
-        vec3 emission = lightningColor * emissionStrength;
-            
-        // Combine all lighting components
-        vec3 result = (ambient + diffuse + specular) * lightningColor + emission;
-        
-        // Ensure we're not exceeding 1.0 in brightness
-        // result = min(result, vec3(1.0));  // Optional, remove for HDR effect
-        
+        // Calculate direction TO the light source (reverse of lightDir)
+        vec3 dirToLight = normalize(-lightDir);
+        // Calculate diffuse intensity
+        float diff = max(dot(norm, dirToLight), 0.0);
+        vec3 diffuse = diffuseColor * diff * lightColor;
+
+        // Specular component (shiny reflection)
+        vec3 viewDir = normalize(viewPos - FragPos); // Direction from fragment to viewer
+        // Calculate reflection direction using GLSL's reflect function
+        // reflect expects incident vector (FROM light source)
+        vec3 reflectDir = reflect(lightDir, norm);
+        // Calculate specular intensity
+        float spec = pow(max(dot(viewDir, reflectDir), 0.0), shininess);
+        vec3 specular = specularColor * spec * lightColor; // Apply strength and light color
+
+        // Combine components and multiply by object's base color
+        vec3 result = (ambient + diffuse + specular) * objectColor;
+
+        // Final color output (fully opaque)
         FragColor = vec4(result, 1.0);
     }
-    )";
+)";
 
 // Particle Vertex Shader
 const char *particleVertexShaderSource = R"(
@@ -263,23 +312,45 @@ const char *planeFragmentShaderSource = R"(
     }
     )";
 
-void compileShader()
+unsigned int compileAndLinkShaders(const char *vertexShaderSource, const char *fragmentShaderSource)
 {
     unsigned int vertexShader = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
     glCompileShader(vertexShader);
+    int success;
+    char infoLog[512];
+    glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
+    if (!success)
+    {
+        glGetShaderInfoLog(vertexShader, 512, NULL, infoLog);
+        std::cerr << "ERROR::SHADER::VERTEX::COMPILATION_FAILED\n" << infoLog << std::endl;
+    }
 
     unsigned int fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
     glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
     glCompileShader(fragmentShader);
+    glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
+    if (!success)
+    {
+        glGetShaderInfoLog(fragmentShader, 512, NULL, infoLog);
+        std::cerr << "ERROR::SHADER::FRAGMENT::COMPILATION_FAILED\n" << infoLog << std::endl;
+    }
 
-    shaderProgram = glCreateProgram();
+    unsigned int shaderProgram = glCreateProgram();
     glAttachShader(shaderProgram, vertexShader);
     glAttachShader(shaderProgram, fragmentShader);
     glLinkProgram(shaderProgram);
+    glGetProgramiv(shaderProgram, GL_LINK_STATUS, &success);
+    if (!success)
+    {
+        glGetProgramInfoLog(shaderProgram, 512, NULL, infoLog);
+        std::cerr << "ERROR::SHADER::PROGRAM::LINKING_FAILED\n" << infoLog << std::endl;
+    }
 
     glDeleteShader(vertexShader);
     glDeleteShader(fragmentShader);
+
+    return shaderProgram;
 }
 
 int main()
@@ -307,7 +378,7 @@ int main()
         return -1;
     }
 
-    compileShader();
+    lightningShaderProgram = compileAndLinkShaders(lightningVertexShaderSource, lightningFragmentShaderSource);
     setupOpenGL();
     setupGroundPlane();
     setupSticks();
@@ -391,15 +462,16 @@ int main()
         }
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        glUseProgram(shaderProgram);
+        glUseProgram(lightningShaderProgram);
 
         glm::mat4 model = glm::mat4(1.0f);
         glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
         glm::mat4 projection = glm::perspective(glm::radians(45.0f), (float)SCR_WIDTH / SCR_HEIGHT, 0.1f, 100.0f);
-        glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, glm::value_ptr(lightningColor));
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+        glUniform3fv(glGetUniformLocation(lightningShaderProgram, "lightningColor"), 1, glm::value_ptr(lightningColor));
+        glUniformMatrix4fv(glGetUniformLocation(lightningShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+        glUniformMatrix4fv(glGetUniformLocation(lightningShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+        glUniformMatrix4fv(glGetUniformLocation(lightningShaderProgram, "projection"), 1, GL_FALSE,
+                           glm::value_ptr(projection));
 
         if (isAutoRegenerating)
         {
@@ -469,19 +541,15 @@ void generateLightning(std::vector<float> &vertices, glm::vec3 start, glm::vec3 
 void updateLightning()
 {
     lightningVertices.clear();
-    lightningLightPositions.clear();
-    
-    // Your existing code to generate lightning
-    for (size_t i = 0; i < sticks.size() - 1; ++i) {
-        glm::vec3 startPos = {
-            sticks[i].position.x,
-            sticks[i].position.y + sticks[i].height,
-            sticks[i].position.z};
+    std::vector<Segment> mainSegments;
 
-        glm::vec3 endPos = {
-            sticks[i + 1].position.x,
-            sticks[i + 1].position.y + sticks[i + 1].height,
-            sticks[i + 1].position.z};
+    // Generate lightning between sticks
+    for (size_t i = 0; i < sticks.size() - 1; ++i)
+    {
+        glm::vec3 startPos = {sticks[i].position.x, sticks[i].position.y + sticks[i].height, sticks[i].position.z};
+
+        glm::vec3 endPos = {sticks[i + 1].position.x, sticks[i + 1].position.y + sticks[i + 1].height,
+                            sticks[i + 1].position.z};
 
         generateLightning(lightningVertices, startPos, endPos, maxDepth, displacement);
     }
@@ -544,66 +612,28 @@ void addNormalsToLightning() {
 
 void renderLightning(const glm::mat4 &view, const glm::mat4 &projection)
 {
-    glUseProgram(shaderProgram);
+    glUseProgram(lightningShaderProgram);
 
-    // Set model, view, projection matrices
-    glm::mat4 model = glm::mat4(1.0f);
-    glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
-    glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
-    glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-    
-    // Set lightning color
-    glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, glm::value_ptr(lightningColor));
-    
-    // Set light position
-    glm::vec3 lightPos = glm::vec3(0.0f, 5.0f, 0.0f);
-    glUniform3fv(glGetUniformLocation(shaderProgram, "lightPos"), 1, glm::value_ptr(lightPos));
-    
-    // Set view position
-    glUniform3fv(glGetUniformLocation(shaderProgram, "viewPos"), 1, glm::value_ptr(cameraPos));
-    
-    // Set emission strength
-    glUniform1f(glGetUniformLocation(shaderProgram, "emissionStrength"), emissionStrength);
-
-    // Enable additive blending for glow effect
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-    
-    // Render lightning
+    // Render multiple passes for a glow effect
     glBindVertexArray(VAO);
-    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 6);
-    
-    // Reset to default blending
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    
-    glBindVertexArray(0);
 
-    // First pass - core lightning (thinner, brighter)
+    // Main lightning (thick and bright)
     glLineWidth(1.0f);
-    glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, 
-                 glm::value_ptr(lightningColor * 1.5f)); // Brighter core
-    glUniform1f(glGetUniformLocation(shaderProgram, "emissionStrength"), emissionStrength * 1.5f);
-    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 6);
-    
-    // Second pass - middle glow (medium thickness)
-    glLineWidth(3.0f);
-    glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, 
-                 glm::value_ptr(lightningColor * 1.2f));
-    glUniform1f(glGetUniformLocation(shaderProgram, "emissionStrength"), emissionStrength);
-    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 6);
-    
-    // Third pass - outer glow (thicker, dimmer)
-    glLineWidth(6.0f);
-    glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, 
-                 glm::value_ptr(lightningColor * 0.8f));
-    glUniform1f(glGetUniformLocation(shaderProgram, "emissionStrength"), emissionStrength * 0.5f);
-    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 6);
-    
-    // Reset to default settings
-    glLineWidth(1.0f);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glUniform3fv(glGetUniformLocation(shaderProgram, "lightningColor"), 1, glm::value_ptr(lightningColor));
-    
+    glUniform3fv(glGetUniformLocation(lightningShaderProgram, "lightningColor"), 1, glm::value_ptr(lightningColor));
+    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 3);
+
+    // Glow effect (slightly transparent and thinner)
+    glLineWidth(5.0f);
+    glm::vec3 glowColor = lightningColor * 1.5f;
+    glUniform3fv(glGetUniformLocation(lightningShaderProgram, "lightningColor"), 1, glm::value_ptr(glowColor));
+    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 3);
+
+    // Core lightning (very bright and thin)
+    glLineWidth(2.0f);
+    glm::vec3 coreColor = lightningColor * 2.0f;
+    glUniform3fv(glGetUniformLocation(lightningShaderProgram, "lightningColor"), 1, glm::value_ptr(coreColor));
+    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 3);
+
     glBindVertexArray(0);
 }
 
@@ -644,13 +674,8 @@ std::string generateLSystem(const std::string &axiom, int iterations)
     return result;
 }
 
-void interpretLSystem(
-    const std::string &lsystem,
-    glm::vec3 origin,
-    glm::vec3 baseDirection,
-    float segmentLength,
-    float angleVariance,
-    std::vector<float> &outVertices)
+void interpretLSystem(const std::string &lsystem, glm::vec3 origin, glm::vec3 baseDirection, float segmentLength,
+                      float angleVariance, std::vector<float> &outVertices)
 {
     struct State
     {
@@ -800,21 +825,7 @@ void framebuffer_size_callback(GLFWwindow *window, int width, int height)
 void initParticleSystem()
 {
     // Compile particle shaders
-    unsigned int particleVertexShader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(particleVertexShader, 1, &particleVertexShaderSource, NULL);
-    glCompileShader(particleVertexShader);
-
-    unsigned int particleFragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(particleFragmentShader, 1, &particleFragmentShaderSource, NULL);
-    glCompileShader(particleFragmentShader);
-
-    particleShaderProgram = glCreateProgram();
-    glAttachShader(particleShaderProgram, particleVertexShader);
-    glAttachShader(particleShaderProgram, particleFragmentShader);
-    glLinkProgram(particleShaderProgram);
-
-    glDeleteShader(particleVertexShader);
-    glDeleteShader(particleFragmentShader);
+    particleShaderProgram = compileAndLinkShaders(particleVertexShaderSource, particleFragmentShaderSource);
 
     // Create VAO and VBO for particles
     glGenVertexArrays(1, &particleVAO);
@@ -855,8 +866,7 @@ void emitParticlesAlongLightning()
 
         Particle particle;
         particle.position = position;
-        particle.velocity = glm::vec3(cos(randomAngle) * randomSpeed,
-                                      sin(randomAngle) * randomSpeed,
+        particle.velocity = glm::vec3(cos(randomAngle) * randomSpeed, sin(randomAngle) * randomSpeed,
                                       (static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 0.05f);
 
         // Brighter color variation for glow effect
@@ -911,7 +921,8 @@ void renderParticles()
     glm::mat4 projection = glm::perspective(glm::radians(45.0f), (float)SCR_WIDTH / SCR_HEIGHT, 0.1f, 100.0f);
 
     glUniformMatrix4fv(glGetUniformLocation(particleShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
-    glUniformMatrix4fv(glGetUniformLocation(particleShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+    glUniformMatrix4fv(glGetUniformLocation(particleShaderProgram, "projection"), 1, GL_FALSE,
+                       glm::value_ptr(projection));
 
     glBindVertexArray(particleVAO);
     glBindBuffer(GL_ARRAY_BUFFER, particleVBO);
@@ -930,31 +941,19 @@ void setupGroundPlane()
     // Plane vertices (a simple square)
     float planeVertices[] = {
         // positions
-        -5.0f, -1.0f, -5.0f,
-        5.0f, -1.0f, -5.0f,
-        5.0f, -1.0f, 5.0f,
-        -5.0f, -1.0f, 5.0f};
+        -5.0f, -1.0f, -5.0f, // Corner 1
+        5.0f,  -1.0f, -5.0f, // Corner 2
+        5.0f,  -1.0f, 5.0f,  // Corner 3
+        -5.0f, -1.0f, 5.0f   // Corner 4
+    };
 
     unsigned int planeIndices[] = {
-        0, 1, 2,
-        0, 2, 3};
+        0, 1, 2, // First triangle
+        0, 2, 3, // Second triangle
+    };
 
     // Create shader program
-    unsigned int planeVertexShader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(planeVertexShader, 1, &planeVertexShaderSource, NULL);
-    glCompileShader(planeVertexShader);
-
-    unsigned int planeFragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(planeFragmentShader, 1, &planeFragmentShaderSource, NULL);
-    glCompileShader(planeFragmentShader);
-
-    planeShaderProgram = glCreateProgram();
-    glAttachShader(planeShaderProgram, planeVertexShader);
-    glAttachShader(planeShaderProgram, planeFragmentShader);
-    glLinkProgram(planeShaderProgram);
-
-    glDeleteShader(planeVertexShader);
-    glDeleteShader(planeFragmentShader);
+    planeShaderProgram = compileAndLinkShaders(planeVertexShaderSource, planeFragmentShaderSource);
 
     // Create VAO/VBO
     unsigned int planeEBO;
@@ -992,8 +991,7 @@ void renderGroundPlane(const glm::mat4 &view, const glm::mat4 &projection)
     glBindVertexArray(0);
 }
 
-void generateCylinderMesh(float radius, float height, int segments,
-                          std::vector<Vertex> &vertices,
+void generateCylinderMesh(float radius, float height, int segments, std::vector<Vertex> &vertices,
                           std::vector<unsigned int> &indices)
 {
     // Top center vertex
@@ -1111,7 +1109,8 @@ void setupSticks()
     glBufferData(GL_ARRAY_BUFFER, cylinderVertices.size() * sizeof(Vertex), cylinderVertices.data(), GL_STATIC_DRAW);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, stickEBO);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, stickIndices.size() * sizeof(unsigned int), stickIndices.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, stickIndices.size() * sizeof(unsigned int), stickIndices.data(),
+                 GL_STATIC_DRAW);
 
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, position));
     glEnableVertexAttribArray(0);
@@ -1121,8 +1120,8 @@ void setupSticks()
 
     glBindVertexArray(0);
 
-    // Compile shader for sticks - we can reuse the lightning shader for simplicity
-    stickShaderProgram = shaderProgram;
+    // Create shader program
+    stickShaderProgram = compileAndLinkShaders(stickVertexShaderSource, stickFragmentShaderSource);
 }
 
 void addStick()
@@ -1141,6 +1140,10 @@ void renderSticks(const glm::mat4 &view, const glm::mat4 &projection)
     glUniformMatrix4fv(glGetUniformLocation(stickShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
     glUniformMatrix4fv(glGetUniformLocation(stickShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
 
+    glUniform3fv(glGetUniformLocation(stickShaderProgram, "lightDir"), 1, glm::value_ptr(lightDirection));
+    glUniform3fv(glGetUniformLocation(stickShaderProgram, "lightColor"), 1, glm::value_ptr(globalLightColor));
+    glUniform3fv(glGetUniformLocation(stickShaderProgram, "viewPos"), 1, glm::value_ptr(cameraPos));
+
     glBindVertexArray(stickVAO);
 
     for (const auto &stick : sticks)
@@ -1151,7 +1154,12 @@ void renderSticks(const glm::mat4 &view, const glm::mat4 &projection)
         glUniformMatrix4fv(glGetUniformLocation(stickShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
 
         // Set stick color
-        glUniform3fv(glGetUniformLocation(stickShaderProgram, "lightningColor"), 1, glm::value_ptr(stick.color));
+        glUniform3fv(glGetUniformLocation(stickShaderProgram, "objectColor"), 1, glm::value_ptr(stick.color));
+        glUniform3fv(glGetUniformLocation(stickShaderProgram, "diffuseColor"), 1,
+                     glm::value_ptr(glm::vec3(1.0f, 1.0f, 1.0f)));
+        glUniform3fv(glGetUniformLocation(stickShaderProgram, "specularColor"), 1,
+                     glm::value_ptr(glm::vec3(1.0f, 1.0f, 1.0f)));
+        glUniform1f(glGetUniformLocation(stickShaderProgram, "shininess"), 1.0f);
 
         // Draw stick as cylinder
         glDrawElements(GL_TRIANGLES, stickIndices.size(), GL_UNSIGNED_INT, 0);
