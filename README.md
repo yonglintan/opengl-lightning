@@ -1,3 +1,7 @@
+# Real-Time Procedural Lightning Generator
+
+A highly configurable, real time 3D lightning effect generator built using OpenGL. Parameters like color, intensity, erraticity, and 3D anchor points can be dynamically modified to create lightning with the desired visual effect.
+
 ## Getting Started
 
 ### **Requirements**
