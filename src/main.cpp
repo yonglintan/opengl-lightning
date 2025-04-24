@@ -46,6 +46,7 @@ void addStick();
 void addStickControls();
 void renderSticks(const glm::mat4 &view, const glm::mat4 &projection);
 void updateStickPositions();
+void buildUI();
 
 // Settings
 const unsigned int SCR_WIDTH = 800;
@@ -53,6 +54,8 @@ const unsigned int SCR_HEIGHT = 600;
 
 glm::vec3 lightDirection = glm::normalize(glm::vec3(-0.3f, -0.8f, -0.5f)); // Example direction
 glm::vec3 globalLightColor = glm::vec3(1.0f, 1.0f, 1.0f);                  // White light
+
+unsigned int sceneFBO;
 
 // Lightning parameters (adjustable via UI)
 int maxDepth = 5;
@@ -117,7 +120,7 @@ unsigned int planeShaderProgram;
 float particleEmissionRate = 0.05f;
 float particleLifetime = 1.0f;
 
-// OpenGL objects
+// OpenGL lightning objects
 unsigned int VAO, VBO, lightningShaderProgram;
 std::vector<float> lightningVertices;
 
@@ -395,49 +398,6 @@ int main()
 
         processInput(window);
 
-        // ImGui
-        ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplGlfw_NewFrame();
-        ImGui::NewFrame();
-        ImGui::Begin("Lightning Settings");
-        ImGui::SliderInt("Max Depth", &maxDepth, 1, 10);
-        ImGui::SliderFloat("Displacement", &displacement, 0.0f, 5.0f);
-        ImGui::ColorEdit3("Color", glm::value_ptr(lightningColor), ImGuiColorEditFlags_NoInputs);
-
-        // Add Branch controls
-        ImGui::Separator();
-        ImGui::Text("Lightning Branches");
-        ImGui::SliderFloat("Branch Length", &segmentLength, 0.0f, 0.15f);
-        ImGui::SliderFloat("Branch Frequncy", &branchChance, 0.0f, 1.0f);
-
-        // Add particle controls
-        ImGui::Separator();
-        ImGui::Text("Particle Effects");
-        ImGui::SliderFloat("Emission Rate", &particleEmissionRate, 0.01f, 0.2f);
-        ImGui::SliderFloat("Particle Lifetime", &particleLifetime, 0.1f, 2.0f);
-
-        addStickControls();
-
-        if (ImGui::Button(isAutoRegenerating ? "Stop" : "Play"))
-        {
-            isAutoRegenerating = !isAutoRegenerating; // Toggle state
-        }
-        ImGui::SameLine();
-
-        if (ImGui::Button("Regenerate"))
-        {
-            updateLightning();
-            emitParticlesAlongLightning();
-        }
-        ImGui::SameLine();
-
-        if (ImGui::Button("Add Stick"))
-        {
-            addStick();
-        }
-
-        ImGui::End();
-
         // Update particles
         updateParticles(deltaTime);
 
@@ -451,16 +411,9 @@ int main()
         }
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        glUseProgram(lightningShaderProgram);
 
-        glm::mat4 model = glm::mat4(1.0f);
         glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
         glm::mat4 projection = glm::perspective(glm::radians(45.0f), (float)SCR_WIDTH / SCR_HEIGHT, 0.1f, 100.0f);
-        glUniform3fv(glGetUniformLocation(lightningShaderProgram, "lightningColor"), 1, glm::value_ptr(lightningColor));
-        glUniformMatrix4fv(glGetUniformLocation(lightningShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
-        glUniformMatrix4fv(glGetUniformLocation(lightningShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
-        glUniformMatrix4fv(glGetUniformLocation(lightningShaderProgram, "projection"), 1, GL_FALSE,
-                           glm::value_ptr(projection));
 
         if (isAutoRegenerating)
         {
@@ -474,6 +427,11 @@ int main()
         renderLightning(view, projection);
         renderParticles();
 
+        // ImGui
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+        buildUI();
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
@@ -483,6 +441,48 @@ int main()
 
     glfwTerminate();
     return 0;
+}
+
+void buildUI()
+{
+    ImGui::Begin("Lightning Settings");
+    ImGui::SliderInt("Max Depth", &maxDepth, 1, 10);
+    ImGui::SliderFloat("Displacement", &displacement, 0.0f, 5.0f);
+    ImGui::ColorEdit3("Color", glm::value_ptr(lightningColor), ImGuiColorEditFlags_NoInputs);
+
+    // Add Branch controls
+    ImGui::Separator();
+    ImGui::Text("Lightning Branches");
+    ImGui::SliderFloat("Branch Length", &segmentLength, 0.0f, 0.15f);
+    ImGui::SliderFloat("Branch Frequncy", &branchChance, 0.0f, 1.0f);
+
+    // Add particle controls
+    ImGui::Separator();
+    ImGui::Text("Particle Effects");
+    ImGui::SliderFloat("Emission Rate", &particleEmissionRate, 0.01f, 0.2f);
+    ImGui::SliderFloat("Particle Lifetime", &particleLifetime, 0.1f, 2.0f);
+
+    addStickControls();
+
+    if (ImGui::Button(isAutoRegenerating ? "Stop" : "Play"))
+    {
+        isAutoRegenerating = !isAutoRegenerating; // Toggle state
+    }
+    ImGui::SameLine();
+
+    if (ImGui::Button("Regenerate"))
+    {
+        updateLightning();
+        emitParticlesAlongLightning();
+    }
+    ImGui::SameLine();
+
+    if (ImGui::Button("Add Stick"))
+    {
+        addStick();
+    }
+
+    ImGui::End();
 }
 
 void generateLightning(std::vector<float> &vertices, glm::vec3 start, glm::vec3 end, int depth, float displacement)
@@ -555,6 +555,12 @@ void updateLightning()
 void renderLightning(const glm::mat4 &view, const glm::mat4 &projection)
 {
     glUseProgram(lightningShaderProgram);
+
+    glm::mat4 model = glm::mat4(1.0f);
+    glUniformMatrix4fv(glGetUniformLocation(lightningShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+    glUniformMatrix4fv(glGetUniformLocation(lightningShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+    glUniformMatrix4fv(glGetUniformLocation(lightningShaderProgram, "projection"), 1, GL_FALSE,
+                       glm::value_ptr(projection));
 
     // Render multiple passes for a glow effect
     glBindVertexArray(VAO);
