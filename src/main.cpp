@@ -52,8 +52,8 @@ void buildUI();
 const unsigned int SCR_WIDTH = 800;
 const unsigned int SCR_HEIGHT = 600;
 
-glm::vec3 lightDirection = glm::normalize(glm::vec3(-0.3f, -0.8f, -0.5f)); // Example direction
-glm::vec3 globalLightColor = glm::vec3(1.0f, 1.0f, 1.0f);                  // White light
+glm::vec3 lightDirection = glm::normalize(glm::vec3(-0.3f, -0.8f, -0.5f));
+glm::vec3 globalLightColor = glm::vec3(1.0f, 1.0f, 1.0f); // White light
 
 unsigned int sceneFBO;
 
@@ -1096,8 +1096,6 @@ void renderSticks(const glm::mat4 &view, const glm::mat4 &projection)
 
         // Draw stick as cylinder
         glDrawElements(GL_TRIANGLES, stickIndices.size(), GL_UNSIGNED_INT, 0);
-
-        // TODO: Lightning effect on the stick. Edit/create different shader if required.
     }
 
     glBindVertexArray(0);
