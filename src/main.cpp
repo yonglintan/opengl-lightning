@@ -153,10 +153,10 @@ void main()
 const char *lightningFragmentShaderSource = R"(
 #version 330 core
 out vec4 FragColor;
-uniform vec3 lightningColor;
+uniform vec4 lightningColor;
 void main()
 {
-    FragColor = vec4(lightningColor, 1.0);
+    FragColor = lightningColor;
 }
 )";
 
@@ -565,21 +565,24 @@ void renderLightning(const glm::mat4 &view, const glm::mat4 &projection)
     // Render multiple passes for a glow effect
     glBindVertexArray(VAO);
 
-    // Main lightning (thick and bright)
-    glLineWidth(1.0f);
-    glUniform3fv(glGetUniformLocation(lightningShaderProgram, "lightningColor"), 1, glm::value_ptr(lightningColor));
-    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 3);
-
-    // Glow effect (slightly transparent and thinner)
-    glLineWidth(5.0f);
-    glm::vec3 glowColor = lightningColor * 1.5f;
-    glUniform3fv(glGetUniformLocation(lightningShaderProgram, "lightningColor"), 1, glm::value_ptr(glowColor));
-    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 3);
-
     // Core lightning (very bright and thin)
     glLineWidth(2.0f);
-    glm::vec3 coreColor = lightningColor * 2.0f;
-    glUniform3fv(glGetUniformLocation(lightningShaderProgram, "lightningColor"), 1, glm::value_ptr(coreColor));
+    glm::vec3 coreColor = lightningColor * 1.5f;
+    glUniform4fv(glGetUniformLocation(lightningShaderProgram, "lightningColor"), 1,
+                 glm::value_ptr(glm::vec4(coreColor, 1.0f)));
+    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 3);
+
+    // Main lightning (sligtly transparent, thick and bright)
+    glLineWidth(8.0f);
+    glUniform4fv(glGetUniformLocation(lightningShaderProgram, "lightningColor"), 1,
+                 glm::value_ptr(glm::vec4(lightningColor, 0.5f)));
+    glDrawArrays(GL_LINES, 0, lightningVertices.size() / 3);
+
+    // Glow effect (more transparent and thickest)
+    glLineWidth(15.0f);
+    glm::vec3 glowColor = lightningColor;
+    glUniform4fv(glGetUniformLocation(lightningShaderProgram, "lightningColor"), 1,
+                 glm::value_ptr(glm::vec4(glowColor, 0.15f)));
     glDrawArrays(GL_LINES, 0, lightningVertices.size() / 3);
 
     glBindVertexArray(0);
@@ -745,6 +748,8 @@ void processInput(GLFWwindow *window)
 void setupOpenGL()
 {
     glEnable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); // Standard alpha blending
 
     glGenVertexArrays(1, &VAO);
     glGenBuffers(1, &VBO);
@@ -853,10 +858,6 @@ void renderParticles()
     if (particles.empty())
         return;
 
-    // Enable blending for transparency
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-
     glUseProgram(particleShaderProgram);
 
     glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
@@ -874,8 +875,6 @@ void renderParticles()
 
     glBindVertexArray(0);
     glUseProgram(0);
-
-    glDisable(GL_BLEND);
 }
 
 void setupGroundPlane()
