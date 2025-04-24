@@ -160,8 +160,8 @@ void main()
 }
 )";
 
-// Stick Vertex Shader
-const char *stickVertexShaderSource = R"(
+// Phong Lighting Vertex Shader
+const char *vertexShaderSource = R"(
     #version 330 core
     layout (location = 0) in vec3 aPos;    // Vertex Position (object space)
     layout (location = 1) in vec3 aNormal; // Vertex Normal (object space)
@@ -189,8 +189,8 @@ const char *stickVertexShaderSource = R"(
     }
 )";
 
-// Stick Fragment Shader
-const char *stickFragmentShaderSource = R"(
+// Phong Lighting Fragment Shader
+const char *fragmentShaderSource = R"(
     #version 330 core
     out vec4 FragColor;
 
@@ -280,28 +280,6 @@ const char *particleFragmentShaderSource = R"(
         // Fade out towards edges
         float alpha = 1.0 - smoothstep(0.3, 0.5, length(coord));
         FragColor = vec4(Color, alpha);
-    }
-    )";
-
-const char *planeVertexShaderSource = R"(
-    #version 330 core
-    layout (location = 0) in vec3 aPos;
-    uniform mat4 model;
-    uniform mat4 view;
-    uniform mat4 projection;
-    void main()
-    {
-        gl_Position = projection * view * model * vec4(aPos, 1.0);
-    }
-    )";
-
-const char *planeFragmentShaderSource = R"(
-    #version 330 core
-    out vec4 FragColor;
-    uniform vec3 planeColor;
-    void main()
-    {
-        FragColor = vec4(planeColor, 1.0);
     }
     )";
 
@@ -880,21 +858,20 @@ void renderParticles()
 void setupGroundPlane()
 {
     // Plane vertices (a simple square)
-    float planeVertices[] = {
-        // positions
-        -5.0f, -1.0f, -5.0f, // Corner 1
-        5.0f,  -1.0f, -5.0f, // Corner 2
-        5.0f,  -1.0f, 5.0f,  // Corner 3
-        -5.0f, -1.0f, 5.0f   // Corner 4
+    std::vector<Vertex> planeVertices = {
+        {{-5.0f, -1.0f, -5.0f}, {0.0f, 1.0f, 0.0f}},
+        {{5.0f, -1.0f, -5.0f}, {0.0f, 1.0f, 0.0f}},
+        {{5.0f, -1.0f, 5.0f}, {0.0f, 1.0f, 0.0f}},
+        {{-5.0f, -1.0f, 5.0f}, {0.0f, 1.0f, 0.0f}},
     };
 
-    unsigned int planeIndices[] = {
+    std::vector<unsigned int> planeIndices = {
         0, 1, 2, // First triangle
         0, 2, 3, // Second triangle
     };
 
     // Create shader program
-    planeShaderProgram = compileAndLinkShaders(planeVertexShaderSource, planeFragmentShaderSource);
+    planeShaderProgram = compileAndLinkShaders(vertexShaderSource, fragmentShaderSource);
 
     // Create VAO/VBO
     unsigned int planeEBO;
@@ -903,14 +880,19 @@ void setupGroundPlane()
     glGenBuffers(1, &planeEBO);
 
     glBindVertexArray(planeVAO);
+
     glBindBuffer(GL_ARRAY_BUFFER, planeVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(planeVertices), planeVertices, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, planeVertices.size() * sizeof(Vertex), planeVertices.data(), GL_STATIC_DRAW);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, planeEBO);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(planeIndices), planeIndices, GL_STATIC_DRAW);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, planeIndices.size() * sizeof(unsigned int), planeIndices.data(),
+                 GL_STATIC_DRAW);
 
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, position));
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void *)0);
+
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, normal));
+    glEnableVertexAttribArray(1);
 
     glBindVertexArray(0);
 }
@@ -924,11 +906,21 @@ void renderGroundPlane(const glm::mat4 &view, const glm::mat4 &projection)
     glUniformMatrix4fv(glGetUniformLocation(planeShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
     glUniformMatrix4fv(glGetUniformLocation(planeShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
 
+    glUniform3fv(glGetUniformLocation(stickShaderProgram, "lightDir"), 1, glm::value_ptr(lightDirection));
+    glUniform3fv(glGetUniformLocation(stickShaderProgram, "lightColor"), 1, glm::value_ptr(globalLightColor));
+    glUniform3fv(glGetUniformLocation(stickShaderProgram, "viewPos"), 1, glm::value_ptr(cameraPos));
+
     // Dark gray color for the plane
-    glUniform3f(glGetUniformLocation(planeShaderProgram, "planeColor"), 0.2f, 0.2f, 0.2f);
+    float planeColor[3] = {0.2f, 0.2f, 0.2f};
+    glUniform3fv(glGetUniformLocation(stickShaderProgram, "objectColor"), 1, planeColor);
+    glUniform3fv(glGetUniformLocation(stickShaderProgram, "diffuseColor"), 1,
+                 glm::value_ptr(glm::vec3(1.0f, 1.0f, 1.0f)));
+    glUniform3fv(glGetUniformLocation(stickShaderProgram, "specularColor"), 1,
+                 glm::value_ptr(glm::vec3(1.0f, 1.0f, 1.0f)));
+    glUniform1f(glGetUniformLocation(stickShaderProgram, "shininess"), 1.0f);
 
     glBindVertexArray(planeVAO);
-    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+    glDrawElements(GL_TRIANGLES, stickIndices.size(), GL_UNSIGNED_INT, 0);
     glBindVertexArray(0);
 }
 
@@ -1062,7 +1054,7 @@ void setupSticks()
     glBindVertexArray(0);
 
     // Create shader program
-    stickShaderProgram = compileAndLinkShaders(stickVertexShaderSource, stickFragmentShaderSource);
+    stickShaderProgram = compileAndLinkShaders(vertexShaderSource, fragmentShaderSource);
 }
 
 void addStick()
